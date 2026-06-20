@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "docx2xelatex"
+version = "0.1.0"
+description = "Local privacy-first DOCX to clean XeLaTeX pipeline with formula OCR lifecycle"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Local Toolsmith" }]
+dependencies = [
+  "typer>=0.12",
+  "PyYAML>=6.0",
+  "Jinja2>=3.1",
+  "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+docx2xelatex = "docx2xelatex.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+docx2xelatex = ["py.typed"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

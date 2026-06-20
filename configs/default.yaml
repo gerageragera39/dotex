@@ -1,0 +1,54 @@
+pandoc:
+  from: docx
+  to: markdown+raw_tex+tex_math_single_backslash
+  wrap: none
+
+images:
+  formula_extensions: [".wmf", ".emf"]
+  preserve_extensions: [".png", ".jpg", ".jpeg"]
+  imagemagick_density: 900
+  trim: true
+  background: white
+
+ollama:
+  enabled: true
+  base_url: "http://localhost:11434"
+  model: "qwen3-vl:8b"
+  timeout_seconds: 600
+  temperature: 0
+  # null = let Ollama/model use its default generation budget.
+  # Set only if the model writes long explanations despite the strict prompt.
+  num_predict: null
+  force: false
+  progress: true
+  # Quality-first default: send original rendered PNG.
+  # Enable only after checking quality on your documents.
+  resize_image: false
+  max_image_side: 2400
+  retry_empty_with_original: true
+
+docx2tex:
+  enabled: false
+  priority: 2
+
+candidate_selection:
+  priority: ["docx2tex", "ollama_qwen"]
+  reject_patterns:
+    - "\\[\\]\\s*\\[\\]"
+  max_explanation_chars: 20
+
+latex:
+  engine: xelatex
+  mainfont: "Times New Roman"
+  sansfont: "Arial"
+  monofont: "Courier New"
+  documentclass: "article"
+  fontsize: "12pt"
+  lang: "ru-RU"
+  build_pdf: true
+  halt_on_error: false
+
+merge:
+  invalid_formula_policy: "keep_image_with_todo"
+  inline_wrapper: "\\({latex}\\)"
+  display_wrapper: "\\[\n{latex}\n\\]"

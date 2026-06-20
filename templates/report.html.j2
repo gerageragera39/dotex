@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>docx2xelatex formula report</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 1rem; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ccc; padding: .45rem; vertical-align: top; }
+    th { background: #f2f2f2; position: sticky; top: 0; }
+    tr.valid { background: #edf9ed; }
+    tr.invalid { background: #fff0f0; }
+    tr.pending { background: #fffbe6; }
+    img.formula { max-width: 420px; max-height: 180px; background: white; border: 1px solid #ddd; }
+    pre { white-space: pre-wrap; max-width: 42rem; }
+    code { white-space: pre-wrap; }
+    .small { color: #555; font-size: .9em; }
+  </style>
+</head>
+<body>
+<h1>Отчёт проверки формул</h1>
+<p class="small">Файл manifest: <code>{{ manifest_path }}</code></p>
+<table>
+<thead>
+<tr>
+  <th>id</th><th>original image</th><th>selected LaTeX</th><th>candidates</th><th>status/error</th><th>source</th><th>artifacts</th>
+</tr>
+</thead>
+<tbody>
+{% for f in formulas %}
+<tr class="{{ f.row_class }}">
+  <td><code>{{ f.id }}</code><br><span class="small">{{ f.display_type }}</span></td>
+  <td>{% if f.png_rel %}<img class="formula" src="{{ f.png_rel }}" alt="{{ f.id }}">{% else %}<span class="small">no png</span>{% endif %}<br><code class="small">{{ f.image_path }}</code></td>
+  <td><pre>{{ f.selected_latex or '' }}</pre></td>
+  <td>
+    {% for c in f.candidates %}
+      <details open>
+        <summary><b>{{ c.source }}</b> — {{ c.validation_status or 'not validated' }}</summary>
+        <pre>{{ c.latex }}</pre>
+        {% if c.validation_error %}<pre>{{ c.validation_error }}</pre>{% endif %}
+      </details>
+    {% endfor %}
+  </td>
+  <td><b>{{ f.validation_status or 'pending' }}</b>{% if f.validation_error %}<pre>{{ f.validation_error }}</pre>{% endif %}</td>
+  <td>{{ f.selected_source or '' }}</td>
+  <td>
+    {% for a in f.artifacts %}
+      <a href="{{ a.href }}">{{ a.label }}</a><br>
+    {% endfor %}
+  </td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</body>
+</html>

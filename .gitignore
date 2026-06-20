@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Local configs and generated document artifacts
+config.yaml
+*.docx
+*.pdf
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+
+# Pipeline workdirs/artifacts (keep explicit fixtures under tests if needed)
+work/
+output/
+outputs/
+artifacts/
+**/formulas/png/
+**/formulas/ocr/
+**/formulas/validate/
+**/report/formulas.html
+**/text.md
+**/final.md
+**/final.tex
+**/final.pdf
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+example.docx
+*.docx
+*.doc
