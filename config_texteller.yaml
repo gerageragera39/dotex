@@ -1,4 +1,4 @@
-﻿pandoc:
+pandoc:
   from: docx
   to: markdown+raw_tex+tex_math_single_backslash
   wrap: none
@@ -15,15 +15,15 @@ images:
   background: white
 ocr:
   engines:
-  - pix2tex
+  - texteller
 texteller:
-  enabled: false
+  enabled: true
   repo_path: external/TexTeller
-  timeout_seconds: 180
+  timeout_seconds: 600
   command: null
 pix2tex:
-  enabled: true
-  timeout_seconds: 180
+  enabled: false
+  timeout_seconds: 300
 ollama:
   enabled: false
   base_url: http://localhost:11434
@@ -41,9 +41,8 @@ docx2tex:
   priority: 2
 candidate_selection:
   priority:
-  - pix2tex
   - texteller
-  - ollama_qwen
+  - pix2tex
   - docx2tex
   reject_patterns:
   - \[\]\s*\[\]

@@ -8,7 +8,8 @@
   <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-blue">
   <img alt="Local first" src="https://img.shields.io/badge/local--first-privacy-green">
   <img alt="XeLaTeX" src="https://img.shields.io/badge/output-XeLaTeX-orange">
-  <img alt="Ollama" src="https://img.shields.io/badge/Ollama-qwen3--vl%3A8b-black">
+  <img alt="pix2tex" src="https://img.shields.io/badge/OCR-pix2tex-purple">
+  <img alt="TexTeller" src="https://img.shields.io/badge/OCR-TexTeller-black">
 </p>
 
 ---
@@ -61,7 +62,7 @@ Typical problems were:
 So I built this project around a different idea:
 
 > Use Pandoc for what it is good at — text and document structure.
-> Use local vision/OCR models for what they are good at — formula recognition.
+> Use specialized local OCR models for what they are good at — formula recognition.
 > Validate every formula independently.
 > Never let one broken formula destroy the whole paper.
 
@@ -75,7 +76,9 @@ Each formula goes through its own lifecycle:
 image → png → candidates → validation → selection → merge
 ```
 
-If a formula cannot be recognized or compiled, the final document is still generated with a PNG preview and a `TODO_FORMULA_f0001` marker, so it can be fixed manually later. Legacy WMF/EMF formula images are not allowed into `final.md` / `final.tex`.
+If a formula cannot be recognized or compiled, the final document is still generated with a PNG preview and a `TODO_FORMULA_f0001` marker, so it can be fixed manually later.
+
+Legacy WMF/EMF formula images are not allowed into `final.md` / `final.tex`.
 
 This makes the pipeline practical for real archival work.
 
@@ -90,9 +93,9 @@ flowchart TD
     C --> D[Formula manifest]
     D --> E[WMF/EMF → PNG]
     E --> F[Local formula OCR engines]
-    F --> F1[TexTeller optional primary]
-    F --> F2[pix2tex local OCR]
-    F --> F3[Ollama qwen3-vl:8b fallback]
+    F --> F1[TexTeller quality engine]
+    F --> F2[pix2tex fast engine]
+    F --> F3[Optional Ollama qwen3-vl fallback]
     F1 --> G[LaTeX candidates]
     F2 --> G
     F3 --> G
@@ -108,15 +111,15 @@ flowchart TD
 
 ### What each tool does
 
-| Component                | Role                                                                                      |
-| ------------------------ | ----------------------------------------------------------------------------------------- |
-| **Pandoc**               | Extracts text, paragraphs, lists, italics, bold text and media from DOCX                  |
-| **ImageMagick**          | Converts WMF/EMF formula previews into PNG                                                |
-| **TexTeller**           | Optional primary local formula OCR engine from `external/TexTeller`                       |
-| **pix2tex**              | Default simple local formula OCR engine                                                   |
-| **Ollama + qwen3-vl:8b** | Fallback local vision OCR engine                                                          |
-| **XeLaTeX**              | Validates every candidate formula and builds final PDF                                    |
-| **docx2tex**             | Optional: used only as an additional formula candidate source, not as final TeX generator |
+| Component                | Role                                                                     |
+| ------------------------ | ------------------------------------------------------------------------ |
+| **Pandoc**               | Extracts text, paragraphs, lists, italics, bold text and media from DOCX |
+| **ImageMagick**          | Converts WMF/EMF formula previews into PNG                               |
+| **pix2tex**              | Fast local formula OCR engine                                            |
+| **TexTeller**            | Higher-quality formula OCR engine, useful for harder formulas            |
+| **Ollama + qwen3-vl:8b** | Optional local vision fallback                                           |
+| **XeLaTeX**              | Validates every candidate formula and builds final PDF                   |
+| **docx2tex**             | Optional additional formula candidate source, not final TeX generator    |
 
 ---
 
@@ -144,7 +147,7 @@ Pandoc Markdown → final.md → clean final.tex → XeLaTeX
 
 * Your DOCX files are processed locally.
 * Formula images are processed locally.
-* Default formula OCR uses local `pix2tex` in your Python environment.
+* Default OCR engines run locally in your Python environment.
 * Optional Ollama fallback uses local Ollama at `http://localhost:11434`.
 * The project intentionally rejects non-localhost Ollama URLs.
 * No document text, formulas or images are sent to external APIs.
@@ -163,12 +166,10 @@ Install these tools locally:
 | Pandoc             | DOCX → Markdown and Markdown → LaTeX |
 | MiKTeX or TeX Live | XeLaTeX compilation                  |
 | ImageMagick        | WMF/EMF → PNG                        |
-| pix2tex            | Default local formula OCR engine     |
+| pix2tex            | Fast local formula OCR               |
+| TexTeller          | Higher-quality local formula OCR     |
 | Ollama             | Optional fallback vision runtime     |
-| `qwen3-vl:8b`      | Optional fallback formula OCR model  |
-| TexTeller          | Optional advanced formula OCR engine |
-
-For the recommended default install, install pix2tex with the project extras. Ollama and TexTeller are opt-in.
+| `qwen3-vl:8b`      | Optional fallback vision model       |
 
 ---
 
@@ -193,110 +194,274 @@ The generated header explicitly defines Cyrillic font families for polyglossia, 
 \newfontfamily\cyrillicfonttt{Consolas}[Script=Cyrillic]
 ```
 
-This avoids the common XeLaTeX/polyglossia error where `Courier New` or another monospace font is not recognized as supporting Cyrillic.
-
 Check the local Russian XeLaTeX preset:
 
 ```powershell
-docx2xelatex test-latex --config config.yaml --workdir build
+docx2xelatex test-latex --config config_pix2tex.yaml --workdir build
 ```
-
-The command creates and compiles a minimal document with Russian text, `\texttt{...}` Cyrillic text, and a simple formula. `doctor --config config.yaml` also reports the XeLaTeX engine, configured fonts, polyglossia/babel conflict status, and the minimal Russian compile result when `xelatex` is available.
 
 ---
 
-## Recommended Windows install
+# Installation
 
-Clone the repository:
+## Option 1 — standard CPU install
+
+Use this if you just want the project to work locally.
 
 ```powershell
 git clone https://github.com/gerageragera39/dotex.git
 cd dotex
-```
 
-Create a virtual environment:
-
-```powershell
 py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
+
+pip install -r requirements.txt
 ```
 
-Install the project with the default pix2tex OCR engine:
+This installs the project and the default OCR stack.
+
+## Option 2 — NVIDIA GPU install
+
+Use this if you have an NVIDIA GPU and want OCR to run faster.
 
 ```powershell
-pip install -e ".[pix2tex]"
+git clone https://github.com/gerageragera39/dotex.git
+cd dotex
+
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
+pip install -r requirements-gpu.txt
 ```
 
-Optional helper commands are also available:
+Check PyTorch CUDA:
 
 ```powershell
-docx2xelatex install-extras --engine pix2tex
-docx2xelatex install-extras --engine texteller
+python -c "import torch; print('torch:', torch.__version__); print('cuda:', torch.cuda.is_available()); print('device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else None)"
 ```
 
-Check your environment:
+Check ONNX Runtime providers:
 
 ```powershell
-docx2xelatex doctor
+python -c "import onnxruntime as ort; print('onnxruntime:', ort.__version__); print('providers:', ort.get_available_providers())"
 ```
 
-Expected checks:
-
-* Python
-* Pandoc
-* ImageMagick `magick`
-* XeLaTeX and Russian XeLaTeX preset
-* pix2tex available
-* TexTeller disabled by default, or unavailable with an install hint
-* Ollama disabled by default unless you opt in
-* effective OCR engines, for example `will_run: ["pix2tex"]`
-
----
-
-## Quickstart
-
-Create config:
-
-```powershell
-docx2xelatex init-config --out config.yaml
-```
-
-Run the full pipeline:
-
-```powershell
-docx2xelatex full `
-  --input "C:\path\to\work.docx" `
-  --workdir "C:\path\to\build" `
-  --config config.yaml
-```
-
-Your output will be in:
+Good GPU output should include:
 
 ```text
-build/
-  text.md
-  formulas/
-  report/formulas.html
-  final.md
-  final.tex
-  final.pdf
+cuda: True
+CUDAExecutionProvider
 ```
 
 ---
 
-## Recommended controlled workflow
+# Config presets
 
-For real documents, step-by-step mode is better than `full`, because you can inspect formulas before building the final TeX.
+The repository includes ready-to-use configs.
 
-Set paths:
+## `config_pix2tex.yaml`
 
-```powershell
-$Docx = "C:\path\to\work.docx"
-$Build = "C:\path\to\build"
-$Config = "C:\path\to\config.yaml"
+Fast and simple OCR mode.
+
+Use this first if you want a stable baseline:
+
+```yaml
+ocr:
+  engines:
+    - pix2tex
 ```
 
-Inspect DOCX internals:
+Recommended for:
+
+* quick tests;
+* small documents;
+* fast local OCR;
+* debugging the pipeline.
+
+## `config_texteller.yaml`
+
+Higher-quality OCR mode.
+
+Usually better for hard formulas:
+
+```yaml
+ocr:
+  engines:
+    - texteller
+    - pix2tex
+```
+
+Recommended for:
+
+* final runs;
+* difficult formulas;
+* best formula quality;
+* comparing TexTeller vs pix2tex candidates.
+
+## Optional Ollama fallback
+
+Ollama is disabled by default. To use it, enable it manually in a config:
+
+```yaml
+ollama:
+  enabled: true
+  model: qwen3-vl:8b
+
+ocr:
+  engines:
+    - texteller
+    - pix2tex
+    - ollama_qwen
+```
+
+Install the model:
+
+```powershell
+ollama pull qwen3-vl:8b
+```
+
+---
+
+# Quick full run
+
+The easiest way is to define paths once in PowerShell and then reuse them.
+
+## 1. Set variables
+
+From the project directory:
+
+```powershell
+cd "C:\Users\SED\Documents\dotex\docx2xelatex"
+.\.venv\Scripts\Activate.ps1
+
+$Project = "C:\Users\SED\Documents\dotex\docx2xelatex"
+$Docx = "$Project\example.docx"
+$Build = "$Project\build"
+$Config = "$Project\config_texteller.yaml"
+```
+
+For a faster pix2tex-only run, use:
+
+```powershell
+$Config = "$Project\config_pix2tex.yaml"
+```
+
+## 2. Check environment
+
+```powershell
+docx2xelatex config-show --config $Config
+docx2xelatex doctor --config $Config
+docx2xelatex test-latex --config $Config --workdir $Build
+```
+
+## 3. Run everything
+
+```powershell
+Remove-Item $Build -Recurse -Force -ErrorAction SilentlyContinue
+
+docx2xelatex full `
+  --input $Docx `
+  --workdir $Build `
+  --config $Config `
+  --force
+```
+
+## 4. Open results
+
+```powershell
+Start-Process "$Build\report\formulas.html"
+Start-Process "$Build\final.pdf"
+```
+
+---
+
+# Recommended full run modes
+
+## Fast mode: pix2tex only
+
+```powershell
+$Project = "C:\Users\SED\Documents\dotex\docx2xelatex"
+$Docx = "$Project\example.docx"
+$Build = "$Project\build"
+$Config = "$Project\config_pix2tex.yaml"
+
+Remove-Item $Build -Recurse -Force -ErrorAction SilentlyContinue
+
+docx2xelatex full `
+  --input $Docx `
+  --workdir $Build `
+  --config $Config `
+  --force
+
+Start-Process "$Build\report\formulas.html"
+Start-Process "$Build\final.pdf"
+```
+
+Expected OCR output:
+
+```text
+OCR effective engines: ['pix2tex']
+```
+
+## Quality mode: TexTeller + pix2tex
+
+```powershell
+$Project = "C:\Users\SED\Documents\dotex\docx2xelatex"
+$Docx = "$Project\example.docx"
+$Build = "$Project\build"
+$Config = "$Project\config_texteller.yaml"
+
+Remove-Item $Build -Recurse -Force -ErrorAction SilentlyContinue
+
+docx2xelatex full `
+  --input $Docx `
+  --workdir $Build `
+  --config $Config `
+  --force
+
+Start-Process "$Build\report\formulas.html"
+Start-Process "$Build\final.pdf"
+```
+
+Expected OCR output:
+
+```text
+OCR effective engines: ['texteller', 'pix2tex']
+```
+
+This mode is slower, but usually gives better formula candidates.
+
+---
+
+# Step-by-step workflow
+
+For real documents, step-by-step mode is often better than `full`, because you can inspect formulas before building the final TeX/PDF.
+
+## 1. Set paths
+
+```powershell
+cd "C:\Users\SED\Documents\dotex\docx2xelatex"
+.\.venv\Scripts\Activate.ps1
+
+$Project = "C:\Users\SED\Documents\dotex\docx2xelatex"
+$Docx = "$Project\example.docx"
+$Build = "$Project\build"
+$Config = "$Project\config_texteller.yaml"
+```
+
+Use pix2tex-only mode instead:
+
+```powershell
+$Config = "$Project\config_pix2tex.yaml"
+```
+
+## 2. Start clean
+
+```powershell
+Remove-Item $Build -Recurse -Force -ErrorAction SilentlyContinue
+```
+
+## 3. Inspect DOCX internals
 
 ```powershell
 docx2xelatex inspect-docx --input $Docx --workdir $Build
@@ -309,13 +474,16 @@ This counts:
 * `word/embeddings/oleObject*.bin`
 * OMML equations such as `<m:oMath>`
 
-Create Markdown with formula images:
+## 4. Convert DOCX to Markdown
 
 ```powershell
-docx2xelatex pandoc-md --input $Docx --workdir $Build --config $Config
+docx2xelatex pandoc-md `
+  --input $Docx `
+  --workdir $Build `
+  --config $Config
 ```
 
-Create formula manifest:
+## 5. Create formula manifest
 
 ```powershell
 docx2xelatex manifest `
@@ -324,55 +492,93 @@ docx2xelatex manifest `
   --config $Config
 ```
 
-Render formula images:
+## 6. Render formula images
 
 ```powershell
 docx2xelatex render-images --workdir $Build --config $Config
 ```
 
-Run local OCR with configured engines:
+## 7. Run OCR
 
 ```powershell
-docx2xelatex ocr --workdir $Build --config $Config --verbose
+docx2xelatex ocr `
+  --workdir $Build `
+  --config $Config `
+  --verbose
 ```
 
-Run OCR for only one large formula:
-
-```powershell
-docx2xelatex ocr --workdir $Build --config $Config --only-id f0001 --force --verbose
-docx2xelatex validate --workdir $Build --config $Config --only-id f0001 --force
-docx2xelatex select --workdir $Build --config $Config
-```
-
-Validate all candidates:
+## 8. Validate candidates
 
 ```powershell
 docx2xelatex validate --workdir $Build --config $Config
 ```
 
-Select best formulas:
+## 9. Select best formulas
 
 ```powershell
 docx2xelatex select --workdir $Build --config $Config
 ```
 
-Generate review report:
+## 10. Generate review report
 
 ```powershell
 docx2xelatex report --workdir $Build --config $Config
 Start-Process "$Build\report\formulas.html"
 ```
 
-After reviewing formulas, merge and build:
+At this point, inspect formulas visually.
+
+## 11. Merge and build
 
 ```powershell
-docx2xelatex merge --workdir $Build --config $Config
-docx2xelatex build --workdir $Build --config $Config
+docx2xelatex merge --workdir $Build --config $Config --strict
+docx2xelatex build --workdir $Build --config $Config --force
+```
+
+Open the result:
+
+```powershell
+Start-Process "$Build\final.pdf"
 ```
 
 ---
 
-## Formula review report
+# Process only one formula
+
+Useful when one formula is bad and you want to test OCR engines only on it.
+
+```powershell
+$FormulaId = "f0004"
+
+docx2xelatex ocr `
+  --workdir $Build `
+  --config $Config `
+  --only-id $FormulaId `
+  --force `
+  --verbose
+
+docx2xelatex validate `
+  --workdir $Build `
+  --config $Config `
+  --only-id $FormulaId `
+  --force
+
+docx2xelatex select --workdir $Build --config $Config
+docx2xelatex report --workdir $Build --config $Config
+
+Start-Process "$Build\report\formulas.html"
+```
+
+Then rebuild only the tail:
+
+```powershell
+docx2xelatex merge --workdir $Build --config $Config --strict
+docx2xelatex build --workdir $Build --config $Config --force
+```
+
+---
+
+# Formula review report
 
 The HTML report is one of the most important parts of the project.
 
@@ -395,13 +601,14 @@ Start-Process "$Build\report\formulas.html"
 A good workflow is:
 
 1. Open the report.
-2. Check red rows.
-3. Fix bad formulas manually in `manifest.json`.
-4. Re-run only the final stages.
+2. Check suspicious formulas.
+3. Compare candidates from TexTeller and pix2tex.
+4. Fix bad formulas manually in `manifest.json` if needed.
+5. Re-run only `merge` and `build`.
 
 ---
 
-## Manual formula correction
+# Manual formula correction
 
 If OCR fails or produces a wrong formula, edit:
 
@@ -431,157 +638,13 @@ Set:
 Then rebuild only the tail:
 
 ```powershell
-docx2xelatex merge --workdir $Build --config $Config
-docx2xelatex build --workdir $Build --config $Config
+docx2xelatex merge --workdir $Build --config $Config --strict
+docx2xelatex build --workdir $Build --config $Config --force
 ```
 
 ---
 
-## Optional: use docx2tex as a formula source
-
-If you already generated a `.tex` file with `docx2tex`, you can add it as an additional source of formula candidates:
-
-```powershell
-docx2xelatex add-docx2tex-candidates `
-  --workdir $Build `
-  --docx2tex-tex "C:\path\to\docx2tex\out\work.tex" `
-  --config $Config
-```
-
-Then rerun:
-
-```powershell
-docx2xelatex validate --workdir $Build --config $Config
-docx2xelatex select --workdir $Build --config $Config
-docx2xelatex report --workdir $Build --config $Config
-```
-
-Candidate priority can be controlled in `config.yaml`:
-
-```yaml
-candidate_selection:
-  priority: ["pix2tex", "texteller", "ollama_qwen", "docx2tex"]
-```
-
-For my documents, `docx2tex` is usually more useful as a fallback candidate source than as the main converter.
-
----
-
-## Optional formula OCR engines
-
-The OCR stage keeps the same lifecycle:
-
-```text
-image → png → candidates → validate → select → merge
-```
-
-Two settings have different meanings:
-
-* `ocr.engines` controls which OCR engines actually run.
-* `candidate_selection.priority` controls which already-produced candidate is selected first after validation.
-
-Safe Windows default:
-
-```yaml
-ocr:
-  engines: ["pix2tex"]
-
-pix2tex:
-  enabled: true
-
-texteller:
-  enabled: false
-
-ollama:
-  enabled: false
-
-candidate_selection:
-  priority: ["pix2tex", "texteller", "ollama_qwen", "docx2tex"]
-```
-
-If an engine is disabled, it will not run even if it accidentally appears in `ocr.engines`. `doctor` and `config-show` report `effective_ocr_engines` with `requested`, `disabled`, `unavailable`, and `will_run`.
-
-### Install pix2tex
-
-Recommended:
-
-```powershell
-pip install -e ".[pix2tex]"
-```
-
-Or use the helper:
-
-```powershell
-docx2xelatex install-extras --engine pix2tex
-```
-
-### Optional Ollama fallback
-
-Install and pull the local model:
-
-```powershell
-ollama pull qwen3-vl:8b
-ollama list
-```
-
-Enable it explicitly:
-
-```yaml
-ollama:
-  enabled: true
-  model: "qwen3-vl:8b"
-
-ocr:
-  engines: ["pix2tex", "ollama_qwen"]
-```
-
-### Optional TexTeller
-
-TexTeller is opt-in and read from `external/TexTeller` by default:
-
-```powershell
-git clone https://github.com/OleehyO/TexTeller.git external/TexTeller
-pip install -e external/TexTeller
-pip install -e ".[texteller-deps]"
-```
-
-If `doctor` specifically reports `ModuleNotFoundError: optimum`, the minimal fix is:
-
-```powershell
-pip install "optimum[onnxruntime]>=1.24.0"
-```
-
-Or use:
-
-```powershell
-docx2xelatex install-extras --engine texteller
-```
-
-Enable it explicitly:
-
-```yaml
-texteller:
-  enabled: true
-  repo_path: "external/TexTeller"
-  timeout_seconds: 180
-
-ocr:
-  engines: ["texteller", "pix2tex"]
-```
-
-If TexTeller is missing a dependency such as `optimum`, `doctor` reports `missing_modules` and an exact `install_hint` instead of failing during OCR.
-
-### Process only one large formula
-
-```powershell
-docx2xelatex ocr --workdir build --config config.yaml --only-id f0001 --force --verbose
-docx2xelatex validate --workdir build --config config.yaml --only-id f0001 --force
-docx2xelatex select --workdir build --config config.yaml
-```
-
----
-
-## Project artifacts
+# Project artifacts
 
 Typical workdir structure:
 
@@ -608,155 +671,104 @@ build/
   final.tex                       # clean Pandoc-generated XeLaTeX
   final.pdf                       # final PDF if build succeeds
   final.log                       # final XeLaTeX log
+  final.build.log                 # captured build output
 ```
 
 ---
 
-## Configuration
+# Configuration notes
 
-Create default config:
+## `ocr.engines` vs `candidate_selection.priority`
+
+These two settings do different things.
+
+`ocr.engines` controls which OCR engines actually run:
+
+```yaml
+ocr:
+  engines:
+    - texteller
+    - pix2tex
+```
+
+`candidate_selection.priority` controls which already-produced valid candidate is preferred:
+
+```yaml
+candidate_selection:
+  priority:
+    - texteller
+    - pix2tex
+    - ollama_qwen
+    - docx2tex
+```
+
+If an engine is disabled, it will not run even if it appears in `ocr.engines`.
+
+Check effective configuration:
 
 ```powershell
-docx2xelatex init-config --out config.yaml
-```
-
-Important options:
-
-```yaml
-ocr:
-  engines: ["pix2tex"]
-
-texteller:
-  enabled: false
-  repo_path: "external/TexTeller"
-  timeout_seconds: 180
-  command: null   # auto; or set a list/string with {image_path}
-
-pix2tex:
-  enabled: true
-  timeout_seconds: 180
-
-ollama:
-  enabled: false
-  base_url: "http://localhost:11434"
-  model: "qwen3-vl:8b"
-  timeout_seconds: 1200
-  resize_image: false
-  max_image_side: 2400
-  num_predict: null
-
-candidate_selection:
-  priority: ["pix2tex", "texteller", "ollama_qwen", "docx2tex"]
-
-latex:
-  engine: xelatex
-  mainfont: "Times New Roman"
-  sansfont: "Arial"
-  monofont: "Consolas"
-  documentclass: article
-  fontsize: 12pt
-  lang: ru-RU
-  main_language: russian
-  other_languages:
-    - english
-  build_pdf: true
-  halt_on_error: false
-  use_polyglossia: true
-  use_babel: false
-  use_unicode_math: false
-```
-
-Disable an engine without changing the rest of the pipeline:
-
-```yaml
-texteller:
-  enabled: false
-
-pix2tex:
-  enabled: false
-
-ollama:
-  enabled: false
-```
-
-Or change engine run order:
-
-```yaml
-ocr:
-  engines: ["pix2tex", "ollama_qwen"]
-```
-
-If OCR is too slow, try:
-
-```yaml
-ollama:
-  resize_image: true
-  max_image_side: 2400
-```
-
-If recognition quality drops, switch back to:
-
-```yaml
-ollama:
-  resize_image: false
+docx2xelatex config-show --config $Config
+docx2xelatex doctor --config $Config
 ```
 
 ---
 
-## CLI commands
+# CLI commands
 
 | Command                   | Description                                                       |
 | ------------------------- | ----------------------------------------------------------------- |
 | `doctor`                  | Check local dependencies and Russian XeLaTeX preset               |
 | `test-latex`              | Compile a minimal Russian XeLaTeX smoke-test document             |
-| `config-show`              | Show merged config and effective OCR engines                      |
-| `install-extras`           | Install optional pix2tex or TexTeller dependencies                |
+| `config-show`             | Show merged config and effective OCR engines                      |
+| `install-extras`          | Install optional pix2tex or TexTeller dependencies                |
 | `init-config`             | Create YAML config                                                |
 | `inspect-docx`            | Count DOCX formula/media internals without printing document text |
 | `pandoc-md`               | Convert DOCX to Markdown and extract media                        |
 | `manifest`                | Find formula images and create manifest                           |
 | `render-images`           | Convert WMF/EMF formulas to PNG                                   |
-| `ocr`                     | Run configured local formula OCR engines                           |
+| `ocr`                     | Run configured local formula OCR engines                          |
 | `add-docx2tex-candidates` | Add candidates from docx2tex-generated `.tex`                     |
 | `validate`                | Compile every candidate formula separately                        |
 | `select`                  | Select the best valid candidate                                   |
 | `report`                  | Generate HTML formula review report                               |
 | `merge`                   | Replace image formulas with LaTeX in Markdown                     |
 | `build`                   | Generate clean final TeX/PDF                                      |
-| `full`                    | Run the main pipeline                                             |
+| `full`                    | Run the full pipeline                                             |
 
-Useful OCR/validate options:
+Useful options:
 
 ```powershell
 docx2xelatex ocr --workdir $Build --config $Config --verbose
-docx2xelatex ocr --workdir $Build --config $Config --timeout-seconds 1200
 docx2xelatex ocr --workdir $Build --config $Config --only-id f0001 --force --verbose
 docx2xelatex ocr --workdir $Build --config $Config --from-id f0010 --to-id f0020 --limit 5
 docx2xelatex validate --workdir $Build --config $Config --only-id f0001 --force
+docx2xelatex merge --workdir $Build --config $Config --strict
+docx2xelatex build --workdir $Build --config $Config --force
 ```
 
 ---
 
-## Troubleshooting
+# Troubleshooting
 
-### `magick` not found
+## `magick` not found
 
 Install ImageMagick and restart PowerShell:
 
 ```powershell
 magick -version
-docx2xelatex doctor
+docx2xelatex doctor --config $Config
 ```
 
-### `xelatex` not found
+## `xelatex` not found
 
 Install MiKTeX or TeX Live:
 
 ```powershell
 xelatex --version
+docx2xelatex doctor --config $Config
 ```
 
-### Russian XeLaTeX preset fails
+## Russian XeLaTeX preset fails
 
 Run:
 
@@ -773,58 +785,74 @@ latex:
   use_babel: false
 ```
 
-Do not enable `use_babel: true` together with `use_polyglossia: true`; build validation rejects that combination.
+Do not enable `use_babel: true` together with `use_polyglossia: true`.
 
-### UnicodeDecodeError from subprocess output
-
-This should be impossible in current versions: all external commands are captured in bytes mode and decoded as UTF-8 with replacement. If it happens, run:
-
-```powershell
-docx2xelatex doctor --config $Config
-```
-
-and file an issue with the command output.
-
-### `final.tex` contains `includegraphics` for `.wmf` / `.emf`
+## `final.tex` contains `.wmf` / `.emf`
 
 This is a merge invariant failure. Run:
 
 ```powershell
 docx2xelatex merge --workdir $Build --config $Config --strict
-Get-Content "$Build\merge-unresolved.json"
+Get-Content "$Build\merge-unresolved.json" -Raw
 ```
 
-`build` refuses to run Pandoc if `final.md` still contains manifest formula WMF/EMF references. Unresolved formulas are replaced with PNG previews plus `TODO_FORMULA_*`, not WMF/EMF.
+`build` refuses to run Pandoc if `final.md` still contains manifest formula WMF/EMF references.
 
-### TexTeller `ModuleNotFoundError: optimum`
+Unresolved formulas are replaced with PNG previews plus `TODO_FORMULA_*`, not WMF/EMF.
 
-Install the missing dependency:
+## TexTeller is not installed
+
+Try the standard install first:
+
+```powershell
+pip install texteller
+```
+
+If `doctor` reports missing dependencies, install project extras:
+
+```powershell
+pip install -r requirements.txt
+```
+
+or GPU dependencies:
+
+```powershell
+pip install -r requirements-gpu.txt
+```
+
+If the specific missing module is `optimum`:
 
 ```powershell
 pip install "optimum[onnxruntime]>=1.24.0"
 ```
 
-Then check:
+## OCR runs on CPU instead of GPU
+
+Check PyTorch:
 
 ```powershell
-docx2xelatex doctor --config $Config
+python -c "import torch; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else None)"
 ```
 
-### Ollama unavailable
+Check ONNX Runtime:
 
-Check Ollama:
+```powershell
+python -c "import onnxruntime as ort; print(ort.__version__); print(ort.get_available_providers())"
+```
+
+For GPU install, use:
+
+```powershell
+pip install -r requirements-gpu.txt
+```
+
+## Ollama unavailable
+
+Ollama is optional. Check it only if you enabled `ollama_qwen`:
 
 ```powershell
 ollama list
 ```
-
-The project only supports local Ollama URLs such as:
-
-```text
-http://localhost:11434
-```
-
-### Model not found
 
 Install the model:
 
@@ -832,23 +860,17 @@ Install the model:
 ollama pull qwen3-vl:8b
 ```
 
-### OCR is slow
+## UnicodeDecodeError from external tools
 
-Vision models can be slow on large formula images. Use verbose mode:
-
-```powershell
-docx2xelatex ocr --workdir $Build --config $Config --verbose
-```
-
-Check current OCR status:
+This should not happen in current versions. External commands are captured in bytes mode and decoded safely. If it happens, run:
 
 ```powershell
-Get-Content "$Build\formulas\ocr\f0001_texteller.json"
-Get-Content "$Build\formulas\ocr\f0001_pix2tex.json"
-Get-Content "$Build\formulas\ocr\f0001_ollama_qwen.json"
+docx2xelatex doctor --config $Config
 ```
 
-### A formula fails validation
+and open an issue with the command output.
+
+## A formula fails validation
 
 Open the validation files:
 
@@ -858,31 +880,20 @@ build/formulas/validate/f0001/
 
 Then either:
 
-* fix the candidate manually in `manifest.json`;
-* add a better candidate;
-* leave the original image with `TODO_FORMULA_f0001`.
-
-### Final PDF fails but `final.tex` exists
-
-This is recoverable. Open:
-
-```text
-build/final.tex
-build/final.log
-```
-
-The project keeps intermediate files so the result can be debugged.
+* choose another candidate;
+* fix the formula manually in `manifest.json`;
+* leave it as PNG + `TODO_FORMULA_f0001`.
 
 ---
 
-## Development
+# Development
 
 Install dev dependencies:
 
 ```powershell
 py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -e .[dev]
+pip install -e ".[dev]"
 ```
 
 Run tests:
@@ -893,7 +904,7 @@ pytest
 
 ---
 
-## Roadmap
+# Roadmap
 
 Planned improvements:
 
@@ -902,11 +913,12 @@ Planned improvements:
 * batch processing for multiple papers;
 * improved table handling;
 * better support for numbered equations;
-* optional manual review UI.
+* optional manual review UI;
+* better GPU diagnostics for TexTeller and pix2tex.
 
 ---
 
-## Philosophy
+# Philosophy
 
 This project is built around one practical principle:
 
