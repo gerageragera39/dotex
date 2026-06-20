@@ -1,287 +1,489 @@
-# docx2xelatex
+# dotex — DOCX → XeLaTeX for old mathematical papers
 
-`docx2xelatex` — локальный, конфиденциальный pipeline для перевода старых русскоязычных научных DOCX в контролируемый Markdown, LaTeX-формулы и чистый XeLaTeX/PDF.
+<p align="center">
+  <b>Local-first pipeline for converting legacy mathematical DOCX papers with WMF/OLE formulas into clean Markdown, LaTeX formulas and XeLaTeX/PDF.</b>
+</p>
 
-Главная идея: не доверять одному «магическому» конвертеру. Текст и структуру извлекает Pandoc, каждая формула проходит отдельный жизненный цикл:
+<p align="center">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-blue">
+  <img alt="Local first" src="https://img.shields.io/badge/local--first-privacy-green">
+  <img alt="XeLaTeX" src="https://img.shields.io/badge/output-XeLaTeX-orange">
+  <img alt="Ollama" src="https://img.shields.io/badge/Ollama-qwen3--vl%3A8b-black">
+</p>
+
+---
+
+## What is this?
+
+`dotex` / `docx2xelatex` is a local, controllable conversion pipeline for old scientific DOCX documents, especially mathematical papers where formulas are stored as legacy **WMF/OLE MathType / Equation Editor objects**.
+
+The goal is not just “convert DOCX to PDF”. The goal is to recover a real, editable, modern XeLaTeX document:
+
+```text
+old DOCX → clean Markdown → recognized LaTeX formulas → final.md → final.tex → final.pdf
+```
+
+The project is designed for documents like old Russian-language mathematical papers, where the text is still readable by Pandoc, but formulas are embedded as images such as:
+
+```markdown
+![](media/image4.wmf)
+```
+
+Instead of trusting one magic converter, `dotex` treats every formula as a separate recoverable object.
+
+---
+
+## Why I created this
+
+I had several old mathematical scientific papers written in DOCX. They contain a lot of formulas, but most of them are not modern Word OMML equations. They are old embedded objects with WMF previews.
+
+I tried different tools and workflows:
+
+* Pandoc
+* MarkItDown
+* MinerU
+* Nougat
+* PDF-based extraction
+* DOCX → PDF → OCR approaches
+* direct DOCX → LaTeX converters
+
+They all helped in some places, but none of them gave a clean, reliable XeLaTeX result for this exact case.
+
+Typical problems were:
+
+* formulas became images instead of LaTeX;
+* old WMF/OLE formulas were not recovered;
+* generated `.tex` was too dirty to maintain;
+* XeLaTeX compilation failed on broken formulas;
+* formatting, italics and structure were partially lost;
+* one bad formula could break the whole document.
+
+So I built this project around a different idea:
+
+> Use Pandoc for what it is good at — text and document structure.
+> Use local vision/OCR models for what they are good at — formula recognition.
+> Validate every formula independently.
+> Never let one broken formula destroy the whole paper.
+
+---
+
+## Core idea
+
+Each formula goes through its own lifecycle:
 
 ```text
 image → png → candidates → validation → selection → merge
 ```
 
-Если отдельная формула не распознана или не компилируется, документ не ломается: исходная картинка остаётся в Markdown, рядом добавляется `TODO_FORMULA_f0001`, а проблема видна в HTML-отчёте.
+If a formula cannot be recognized or compiled, the final document is still generated. The original formula image stays in the Markdown and receives a `TODO_FORMULA_f0001` marker, so it can be fixed manually later.
 
-## Почему финальный `.tex` от docx2tex не используется
+This makes the pipeline practical for real archival work.
 
-`docx2tex` иногда умеет извлекать формулы из старых OLE/MathType/Equation Editor объектов, но его полный `.tex` часто грязный, нестабильный и плохо компилируется. В этом проекте `.tex` от `docx2tex` используется только как дополнительный источник кандидатов формул. Финальный документ строится заново: `Pandoc Markdown → final.md → clean final.tex → XeLaTeX`.
+---
 
-## Конфиденциальность
+## How it works
 
-- Документы, изображения, формулы и текст не отправляются во внешние API.
-- OCR формул обращается только к локальному Ollama по `http://localhost:11434`.
-- Код специально отказывается работать с не-localhost Ollama URL.
-- Интернет нужен только вам вручную для установки внешних зависимостей, если они ещё не установлены.
+```mermaid
+flowchart TD
+    A[DOCX] --> B[Pandoc]
+    B --> C[text.md + media/]
+    C --> D[Formula manifest]
+    D --> E[WMF/EMF → PNG]
+    E --> F[Local OCR via Ollama qwen3-vl:8b]
+    F --> G[LaTeX candidates]
+    H[Optional docx2tex .tex] --> G
+    G --> I[Per-formula XeLaTeX validation]
+    I --> J[Best candidate selection]
+    J --> K[HTML review report]
+    J --> L[final.md]
+    L --> M[Pandoc]
+    M --> N[clean final.tex]
+    N --> O[XeLaTeX final.pdf]
+```
 
-## Установка зависимостей
+### What each tool does
 
-Установите локально:
+| Component                | Role                                                                                      |
+| ------------------------ | ----------------------------------------------------------------------------------------- |
+| **Pandoc**               | Extracts text, paragraphs, lists, italics, bold text and media from DOCX                  |
+| **ImageMagick**          | Converts WMF/EMF formula previews into PNG                                                |
+| **Ollama + qwen3-vl:8b** | Recognizes formula images locally                                                         |
+| **XeLaTeX**              | Validates every candidate formula and builds final PDF                                    |
+| **docx2tex**             | Optional: used only as an additional formula candidate source, not as final TeX generator |
 
-1. **Python 3.11+**
-2. **Pandoc** — для DOCX → Markdown и final Markdown → TeX.
-3. **MiKTeX** или **TeX Live** с `xelatex` и пакетами `fontspec`, `amsmath`, `mathtools`, `upgreek`, `tensor`, `xfrac`.
-4. **ImageMagick** с командой `magick` — для WMF/EMF → PNG.
-5. **Ollama**.
-6. Модель **qwen3-vl:8b** в Ollama:
+---
+
+## Why not use final `.tex` from docx2tex?
+
+`docx2tex` can sometimes extract useful math from old OLE/MathType formulas, but its full generated `.tex` can be unstable and hard to maintain.
+
+In this project, `docx2tex` is treated as an optional formula source only:
+
+```text
+docx2tex output → extract formula candidates → validate → maybe use
+```
+
+The final document is rebuilt cleanly:
+
+```text
+Pandoc Markdown → final.md → clean final.tex → XeLaTeX
+```
+
+---
+
+## Privacy model
+
+`dotex` is designed for confidential documents.
+
+* Your DOCX files are processed locally.
+* Formula images are processed locally.
+* OCR uses local Ollama at `http://localhost:11434`.
+* The project intentionally rejects non-localhost Ollama URLs.
+* No document text, formulas or images are sent to external APIs.
+
+Internet access is only needed when you install dependencies yourself.
+
+---
+
+## Requirements
+
+Install these tools locally:
+
+| Tool               | Purpose                              |
+| ------------------ | ------------------------------------ |
+| Python 3.11+       | Main project runtime                 |
+| Pandoc             | DOCX → Markdown and Markdown → LaTeX |
+| MiKTeX or TeX Live | XeLaTeX compilation                  |
+| ImageMagick        | WMF/EMF → PNG                        |
+| Ollama             | Local vision model runtime           |
+| `qwen3-vl:8b`      | Local formula OCR model              |
+
+Install the model:
 
 ```powershell
 ollama pull qwen3-vl:8b
 ```
 
-Проверьте, что Ollama слушает `localhost:11434`.
+Check that Ollama is running:
 
-## PowerShell quickstart
+```powershell
+ollama list
+```
 
-Из папки проекта:
+---
+
+## Installation
+
+Clone the repository:
+
+```powershell
+git clone https://github.com/gerageragera39/dotex.git
+cd dotex
+```
+
+Create a virtual environment:
 
 ```powershell
 py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
+```
+
+Install the project:
+
+```powershell
 pip install -e .
+```
 
+Check your environment:
+
+```powershell
 docx2xelatex doctor
-docx2xelatex init-config --out config.yaml
+```
 
+Expected checks:
+
+* Python
+* Pandoc
+* ImageMagick `magick`
+* XeLaTeX
+* Ollama
+* `qwen3-vl:8b`
+
+---
+
+## Quickstart
+
+Create config:
+
+```powershell
+docx2xelatex init-config --out config.yaml
+```
+
+Run the full pipeline:
+
+```powershell
 docx2xelatex full `
   --input "C:\path\to\work.docx" `
   --workdir "C:\path\to\build" `
   --config config.yaml
 ```
 
-Артефакты будут лежать в `--workdir`.
-
-## Пошаговый запуск
-
-Пошаговый режим удобен для контроля качества и ручной правки формул:
-
-```powershell
-docx2xelatex pandoc-md --input "C:\path\to\work.docx" --workdir "C:\path\to\build" --config config.yaml
-
-docx2xelatex manifest --markdown "C:\path\to\build\text.md" --workdir "C:\path\to\build" --config config.yaml
-
-docx2xelatex render-images --workdir "C:\path\to\build" --config config.yaml
-
-docx2xelatex ocr --workdir "C:\path\to\build" --config config.yaml
-
-docx2xelatex validate --workdir "C:\path\to\build" --config config.yaml
-
-docx2xelatex select --workdir "C:\path\to\build" --config config.yaml
-
-docx2xelatex report --workdir "C:\path\to\build" --config config.yaml
-
-docx2xelatex merge --workdir "C:\path\to\build" --config config.yaml
-
-docx2xelatex build --workdir "C:\path\to\build" --config config.yaml
-```
-
-## Команды CLI
-
-- `doctor` — проверяет Python, `pandoc`, `magick`, `xelatex`, доступность Ollama и наличие модели. Ничего не устанавливает.
-- `init-config --out config.yaml` — создаёт YAML-конфиг.
-- `inspect-docx --input work.docx --workdir build` — анализирует DOCX без вывода текста: считает `word/media/*.wmf`, `*.emf`, `word/embeddings/oleObject*.bin`, OMML `<m:oMath>`.
-- `pandoc-md` — создаёт `build/text.md` и `build/media/...`.
-- `manifest` — ищет image-формулы в Markdown и создаёт `build/formulas/manifest.json`.
-- `render-images` — конвертирует изображения формул в `build/formulas/png/f0001.png`.
-- `ocr` — отправляет PNG в локальный Ollama/qwen3-vl и сохраняет кандидатов; показывает progress bar и пишет status JSON перед каждым запросом.
-- `add-docx2tex-candidates` — добавляет кандидатов из `.tex`, полученного `docx2tex`.
-- `validate` — компилирует каждый кандидат отдельным минимальным XeLaTeX-файлом.
-- `select` — выбирает лучший валидный кандидат по приоритету.
-- `report` — создаёт `build/report/formulas.html`.
-- `merge` — создаёт `build/final.md`.
-- `build` — создаёт `build/final.tex` и, если включено, `build/final.pdf`.
-- `full` — запускает основной pipeline последовательно.
-
-Для инспекции без OCR/валидации есть `--dry-run` у команд `ocr` и `validate`. Для подробного OCR-лога используйте:
-
-```powershell
-docx2xelatex ocr --workdir "C:\path\to\build" --config config.yaml --verbose
-
-# Если отдельная формула считается дольше 10 минут:
-docx2xelatex ocr --workdir "C:\path\to\build" --config config.yaml --verbose --timeout-seconds 1200
-```
-
-OCR выполняется последовательно, не параллельно. Во время обработки каждой формулы файл статуса создаётся заранее:
-
-```text
-build/formulas/ocr/f0001_ollama_qwen.json
-```
-
-В нём видно `status: running`, `done` или `error`, путь к исходному PNG, путь к уменьшенной OCR-копии и время выполнения. Если процесс был прерван, последняя формула может остаться со статусом `running`; при следующем запуске она будет обработана заново, если candidate ещё не записан в `manifest.json`.
-
-## Подключение `.tex` от docx2tex
-
-Если вы отдельно получили `.tex` через `docx2tex`, добавьте его как источник кандидатов:
-
-```powershell
-docx2xelatex add-docx2tex-candidates `
-  --workdir "C:\path\to\build" `
-  --docx2tex-tex "C:\path\to\out\work.tex" `
-  --config config.yaml
-
-# Затем заново проверьте и выберите кандидаты:
-docx2xelatex validate --workdir "C:\path\to\build" --config config.yaml
-docx2xelatex select --workdir "C:\path\to\build" --config config.yaml
-docx2xelatex report --workdir "C:\path\to\build" --config config.yaml
-```
-
-Сопоставление идёт по порядку найденных математических фрагментов и формул в manifest. Это намеренно простой и проверяемый механизм: результат обязательно смотрите в HTML-отчёте.
-
-## Ручная правка плохих формул
-
-1. Откройте:
-
-```text
-build/report/formulas.html
-```
-
-2. Найдите красные строки или неверный LaTeX.
-3. Отредактируйте вручную `build/formulas/manifest.json`:
-   - поле `selected_latex`;
-   - при необходимости `selected_source`, например `manual`;
-   - можно оставить `validation_status` как есть, но лучше после правки запустить `validate`/`select` заново, если правка добавлена как candidate.
-4. Пересоберите только хвост pipeline:
-
-```powershell
-docx2xelatex merge --workdir "C:\path\to\build" --config config.yaml
-docx2xelatex build --workdir "C:\path\to\build" --config config.yaml
-```
-
-Если `selected_latex` заполнен вручную, `merge` вставит его в `final.md`. Если поле пустое, исходная картинка останется с `TODO_FORMULA_...`.
-
-## Где лежат артефакты
+Your output will be in:
 
 ```text
 build/
-  text.md                         # Markdown после Pandoc
-  media/                          # извлечённые Pandoc изображения
+  text.md
   formulas/
-    manifest.json                 # жизненный цикл всех формул
-    png/f0001.png                 # PNG для OCR/проверки
-    ocr/f0001_ollama_qwen.json    # raw OCR-ответы
-    validate/f0001/               # отдельные TeX/log/pdf для кандидатов
-  report/formulas.html            # HTML-отчёт ручной проверки
-  final.md                        # Markdown с LaTeX-формулами или TODO
-  final.tex                       # чистый TeX от Pandoc
-  final.pdf                       # итоговый PDF, если XeLaTeX собрался
-  final.log                       # лог итоговой сборки
+  report/formulas.html
+  final.md
+  final.tex
+  final.pdf
 ```
 
-## Конфиг
+---
 
-Создайте стартовый конфиг:
+## Recommended controlled workflow
+
+For real documents, step-by-step mode is better than `full`, because you can inspect formulas before building the final TeX.
+
+Set paths:
 
 ```powershell
-docx2xelatex init-config --out config.yaml
+$Docx = "C:\path\to\work.docx"
+$Build = "C:\path\to\build"
+$Config = "C:\path\to\config.yaml"
 ```
 
-Важные поля:
+Inspect DOCX internals:
 
-```yaml
-candidate_selection:
-  priority: ["docx2tex", "ollama_qwen"]
-
-ollama:
-  base_url: "http://localhost:11434"
-  model: "qwen3-vl:8b"
-  timeout_seconds: 600
-  num_predict: null      # null = не ограничивать ответ модели вручную
-  resize_image: false    # quality-first: отправлять оригинальный PNG
-  max_image_side: 2400   # используется только если resize_image: true
-
-latex:
-  engine: xelatex
-  mainfont: "Times New Roman"
-  build_pdf: true
+```powershell
+docx2xelatex inspect-docx --input $Docx --workdir $Build
 ```
 
-Если хотите предпочитать qwen3-vl вместо docx2tex, поменяйте порядок:
+This counts:
+
+* `word/media/*.wmf`
+* `word/media/*.emf`
+* `word/embeddings/oleObject*.bin`
+* OMML equations such as `<m:oMath>`
+
+Create Markdown with formula images:
+
+```powershell
+docx2xelatex pandoc-md --input $Docx --workdir $Build --config $Config
+```
+
+Create formula manifest:
+
+```powershell
+docx2xelatex manifest `
+  --markdown "$Build\text.md" `
+  --workdir $Build `
+  --config $Config
+```
+
+Render formula images:
+
+```powershell
+docx2xelatex render-images --workdir $Build --config $Config
+```
+
+Run local OCR:
+
+```powershell
+docx2xelatex ocr --workdir $Build --config $Config --verbose
+```
+
+Validate all candidates:
+
+```powershell
+docx2xelatex validate --workdir $Build --config $Config
+```
+
+Select best formulas:
+
+```powershell
+docx2xelatex select --workdir $Build --config $Config
+```
+
+Generate review report:
+
+```powershell
+docx2xelatex report --workdir $Build --config $Config
+Start-Process "$Build\report\formulas.html"
+```
+
+After reviewing formulas, merge and build:
+
+```powershell
+docx2xelatex merge --workdir $Build --config $Config
+docx2xelatex build --workdir $Build --config $Config
+```
+
+---
+
+## Formula review report
+
+The HTML report is one of the most important parts of the project.
+
+It shows:
+
+* formula id;
+* original image;
+* selected LaTeX;
+* candidate source;
+* validation status;
+* validation errors;
+* links to validation logs.
+
+Open it after OCR and validation:
+
+```powershell
+Start-Process "$Build\report\formulas.html"
+```
+
+A good workflow is:
+
+1. Open the report.
+2. Check red rows.
+3. Fix bad formulas manually in `manifest.json`.
+4. Re-run only the final stages.
+
+---
+
+## Manual formula correction
+
+If OCR fails or produces a wrong formula, edit:
+
+```text
+build/formulas/manifest.json
+```
+
+Find the formula:
+
+```json
+{
+  "id": "f0001",
+  "selected_latex": null,
+  "selected_source": null
+}
+```
+
+Set:
+
+```json
+{
+  "selected_latex": "\\frac{a}{b}",
+  "selected_source": "manual"
+}
+```
+
+Then rebuild only the tail:
+
+```powershell
+docx2xelatex merge --workdir $Build --config $Config
+docx2xelatex build --workdir $Build --config $Config
+```
+
+---
+
+## Optional: use docx2tex as a formula source
+
+If you already generated a `.tex` file with `docx2tex`, you can add it as an additional source of formula candidates:
+
+```powershell
+docx2xelatex add-docx2tex-candidates `
+  --workdir $Build `
+  --docx2tex-tex "C:\path\to\docx2tex\out\work.tex" `
+  --config $Config
+```
+
+Then rerun:
+
+```powershell
+docx2xelatex validate --workdir $Build --config $Config
+docx2xelatex select --workdir $Build --config $Config
+docx2xelatex report --workdir $Build --config $Config
+```
+
+Candidate priority can be controlled in `config.yaml`:
 
 ```yaml
 candidate_selection:
   priority: ["ollama_qwen", "docx2tex"]
 ```
 
-## Idempotent/resumable поведение
+or:
 
-- Если `text.md`, PNG или candidate уже существуют, этапы не делают повторную работу без `--force`.
-- OCR-кандидаты и `manifest.json` сохраняются после каждой формулы, а не только в конце команды.
-- Пустой или error-кандидат `ollama_qwen` не считается успешно распознанным и будет переобработан при следующем `ocr` без обязательного `--force`.
-- Ошибка одной формулы записывается в `manifest.json` и `build/formulas/ocr/*.json`, но не останавливает весь документ.
-- Все промежуточные файлы сохраняются для аудита.
+```yaml
+candidate_selection:
+  priority: ["docx2tex", "ollama_qwen"]
+```
 
-## Future-ready OCR engines
+For my documents, `docx2tex` is usually more useful as a fallback candidate source than as the main converter.
 
-Интерфейс движка находится в:
+---
+
+## Project artifacts
+
+Typical workdir structure:
 
 ```text
-src/docx2xelatex/engines/base.py
+build/
+  text.md                         # Markdown generated by Pandoc
+  media/                          # extracted DOCX images
+  formulas/
+    manifest.json                 # lifecycle state of every formula
+    png/
+      f0001.png                   # rendered formula image
+    ocr/
+      f0001_ollama_qwen.json      # raw OCR status/result
+    validate/
+      f0001/
+        candidate_*.tex           # minimal validation files
+        candidate_*.log           # XeLaTeX logs
+        candidate_*.pdf           # rendered candidate if valid
+  report/
+    formulas.html                 # visual formula review report
+  final.md                        # Markdown with LaTeX formulas or TODOs
+  final.tex                       # clean Pandoc-generated XeLaTeX
+  final.pdf                       # final PDF if build succeeds
+  final.log                       # final XeLaTeX log
 ```
 
-Для подключения `pix2tex` или `TexTeller` добавьте новый модуль в `src/docx2xelatex/engines/`, верните `Candidate(source="...", latex="...")`, затем добавьте CLI-команду или включите движок в общий OCR stage.
+---
 
-## Troubleshooting
+## Configuration
 
-### `Pandoc not found`
-
-Установите Pandoc и убедитесь, что `pandoc.exe` доступен в `PATH`. Проверьте:
+Create default config:
 
 ```powershell
-pandoc --version
-docx2xelatex doctor
+docx2xelatex init-config --out config.yaml
 ```
 
-### `magick not found`
+Important options:
 
-Установите ImageMagick. На Windows важно, чтобы команда называлась именно `magick` и была доступна в новом PowerShell.
+```yaml
+ollama:
+  base_url: "http://localhost:11434"
+  model: "qwen3-vl:8b"
+  timeout_seconds: 600
+  resize_image: false
+  max_image_side: 2400
+  num_predict: null
 
-```powershell
-magick -version
+candidate_selection:
+  priority: ["ollama_qwen", "docx2tex"]
+
+latex:
+  engine: xelatex
+  mainfont: "Times New Roman"
+  sansfont: "Arial"
+  monofont: "Courier New"
+  build_pdf: true
 ```
 
-### `xelatex not found`
-
-Установите MiKTeX или TeX Live и проверьте:
-
-```powershell
-xelatex --version
-```
-
-Если в конфиге указан другой engine, `doctor` проверит его.
-
-### Ollama unavailable
-
-Проверьте, что Ollama запущен локально:
-
-```powershell
-ollama list
-```
-
-`docx2xelatex` использует только `http://localhost:11434`. Внешние URL отклоняются.
-
-### Нет модели `qwen3-vl:8b`
-
-```powershell
-ollama pull qwen3-vl:8b
-docx2xelatex doctor
-```
-
-### OCR очень долго грузит GPU или кажется, что завис
-
-Это ожидаемо для vision-модели: один запрос к `qwen3-vl:8b` может занимать десятки секунд или минуты, особенно если PNG получился очень большим. Команда теперь показывает progress bar и пишет status JSON до обращения к Ollama. Проверьте текущую формулу:
-
-```powershell
-Get-Content "C:\path\to\build\formulas\ocr\f0001_ollama_qwen.json"
-```
-
-По умолчанию OCR использует оригинальный PNG из `build/formulas/png/`, потому что качество важнее скорости. Уменьшенная копия создаётся только если вы явно включили:
+If OCR is too slow, try:
 
 ```yaml
 ollama:
@@ -289,75 +491,161 @@ ollama:
   max_image_side: 2400
 ```
 
-Настройки качества/скорости:
+If recognition quality drops, switch back to:
 
 ```yaml
 ollama:
-  resize_image: false      # лучший default для качества
-  max_image_side: 2400     # применяется только при resize_image: true
-  num_predict: null        # не ограничивать генерацию вручную
-  retry_empty_with_original: true
+  resize_image: false
 ```
 
-Если очень большие PNG действительно тормозят, сначала попробуйте `resize_image: true` и `max_image_side: 2400`. Если качество распознавания падает или появляются пустые ответы — верните `resize_image: false`.
+---
 
-### Ollama request timed out
+## CLI commands
 
-По умолчанию timeout одного OCR-запроса — 600 секунд. Для сложных формул или медленного GPU можно увеличить без правки YAML:
+| Command                   | Description                                                       |
+| ------------------------- | ----------------------------------------------------------------- |
+| `doctor`                  | Check local dependencies                                          |
+| `init-config`             | Create YAML config                                                |
+| `inspect-docx`            | Count DOCX formula/media internals without printing document text |
+| `pandoc-md`               | Convert DOCX to Markdown and extract media                        |
+| `manifest`                | Find formula images and create manifest                           |
+| `render-images`           | Convert WMF/EMF formulas to PNG                                   |
+| `ocr`                     | Run local formula OCR via Ollama/qwen3-vl                         |
+| `add-docx2tex-candidates` | Add candidates from docx2tex-generated `.tex`                     |
+| `validate`                | Compile every candidate formula separately                        |
+| `select`                  | Select the best valid candidate                                   |
+| `report`                  | Generate HTML formula review report                               |
+| `merge`                   | Replace image formulas with LaTeX in Markdown                     |
+| `build`                   | Generate clean final TeX/PDF                                      |
+| `full`                    | Run the main pipeline                                             |
+
+Useful OCR options:
 
 ```powershell
-docx2xelatex ocr --workdir "C:\path\to\build" --config config.yaml --verbose --timeout-seconds 1200
+docx2xelatex ocr --workdir $Build --config $Config --verbose
+docx2xelatex ocr --workdir $Build --config $Config --timeout-seconds 1200
 ```
 
-Или в `config.yaml`:
+---
 
-```yaml
-ollama:
-  timeout_seconds: 1200
+## Troubleshooting
+
+### `magick` not found
+
+Install ImageMagick and restart PowerShell:
+
+```powershell
+magick -version
+docx2xelatex doctor
 ```
 
-### qwen возвращает текст вместо формулы
+### `xelatex` not found
 
-OCR prompt уже требует только LaTeX без Markdown fences и без `$`. Если модель всё равно добавляет пояснения, они частично чистятся в `latex_clean.py`, но обязательно смотрите `report/formulas.html`. Плохую формулу лучше исправить вручную в `manifest.json`.
+Install MiKTeX or TeX Live:
 
-### WMF conversion fails
-
-Проверьте ImageMagick policy/делегаты и попробуйте уменьшить density в конфиге:
-
-```yaml
-images:
-  imagemagick_density: 600
+```powershell
+xelatex --version
 ```
 
-Исходная картинка всё равно останется в manifest, ошибка будет в `png_error`.
+### Ollama unavailable
 
-### formula validation fails
+Check Ollama:
 
-Откройте соответствующие файлы:
+```powershell
+ollama list
+```
+
+The project only supports local Ollama URLs such as:
 
 ```text
-build/formulas/validate/f0001/candidate_ollama_qwen_1.tex
-build/formulas/validate/f0001/candidate_ollama_qwen_1.log
+http://localhost:11434
 ```
 
-Исправьте формулу или добавьте ручной candidate.
+### Model not found
 
-### final PDF fails, но final.tex существует
+Install the model:
 
-Это нормальный recoverable результат. Откройте:
+```powershell
+ollama pull qwen3-vl:8b
+```
+
+### OCR is slow
+
+Vision models can be slow on large formula images. Use verbose mode:
+
+```powershell
+docx2xelatex ocr --workdir $Build --config $Config --verbose
+```
+
+Check current OCR status:
+
+```powershell
+Get-Content "$Build\formulas\ocr\f0001_ollama_qwen.json"
+```
+
+### A formula fails validation
+
+Open the validation files:
+
+```text
+build/formulas/validate/f0001/
+```
+
+Then either:
+
+* fix the candidate manually in `manifest.json`;
+* add a better candidate;
+* leave the original image with `TODO_FORMULA_f0001`.
+
+### Final PDF fails but `final.tex` exists
+
+This is recoverable. Open:
 
 ```text
 build/final.tex
 build/final.log
 ```
 
-Проект не удаляет `final.tex`, даже если PDF не собрался.
+The project keeps intermediate files so the result can be debugged.
 
-## Разработка
+---
+
+## Development
+
+Install dev dependencies:
 
 ```powershell
 py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e .[dev]
+```
+
+Run tests:
+
+```powershell
 pytest
 ```
+
+---
+
+## Roadmap
+
+Planned improvements:
+
+* additional OCR engines such as `pix2tex` or `TexTeller`;
+* better formula candidate ranking;
+* side-by-side formula rendering comparison;
+* batch processing for multiple papers;
+* improved table handling;
+* better support for numbered equations;
+* optional manual review UI.
+
+---
+
+## Philosophy
+
+This project is built around one practical principle:
+
+> A document conversion pipeline should be inspectable, resumable and recoverable.
+
+Old scientific documents are messy. Formula extraction will not be perfect. But a good pipeline should make every failure visible, local and fixable — instead of producing one giant broken `.tex` file.
