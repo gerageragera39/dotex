@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from typing import Any
 
 from .paths import WorkPaths
+from .subprocess_utils import run_command
 
 
 def run_pandoc_docx_to_markdown(input_docx: str | Path, workdir: str | Path, config: dict[str, Any], force: bool = False) -> Path:
@@ -28,7 +28,7 @@ def run_pandoc_docx_to_markdown(input_docx: str | Path, workdir: str | Path, con
         "-o",
         str(out),
     ]
-    proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = run_command(cmd)
     if proc.returncode != 0:
         raise RuntimeError(f"pandoc failed ({proc.returncode})\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}")
     return out

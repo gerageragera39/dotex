@@ -7,8 +7,8 @@ from typing import Any, Iterable, Iterator, TypeVar
 
 from .engines.base import Candidate, FormulaEngine, has_candidate
 from .engines.ollama_qwen import OllamaQwenEngine, _prepare_ocr_image
-from .engines.pix2tex_engine import Pix2TexEngine
-from .engines.texteller_engine import TexTellerEngine
+from .engines.pix2tex_engine import Pix2TexEngine, pix2tex_status
+from .engines.texteller_engine import TexTellerEngine, texteller_status
 from .formula_filter import filter_formulas
 from .manifest import load_manifest, save_manifest
 from .paths import WorkPaths
@@ -16,7 +16,7 @@ from .utils import write_json
 
 T = TypeVar("T")
 
-DEFAULT_OCR_ENGINES = ["texteller", "pix2tex", "ollama_qwen"]
+DEFAULT_OCR_ENGINES = ["pix2tex"]
 
 ENGINE_CONFIG: dict[str, tuple[str, type[FormulaEngine]]] = {
     "texteller": ("texteller", TexTellerEngine),
@@ -53,6 +53,64 @@ def _engine_enabled(config: dict[str, Any], source: str) -> bool:
     config_key, _ = ENGINE_CONFIG[source]
     return bool(config.get(config_key, {}).get("enabled", True))
 
+
+def engine_availability(source: str, config: dict[str, Any]) -> tuple[bool, str | None]:
+    if source == "pix2tex":
+        status = pix2tex_status()
+        return bool(status.get("ok")), status.get("warning")
+    if source == "texteller":
+        status = texteller_status(config)
+        return bool(status.get("ok")), status.get("warning")
+    if source == "ollama_qwen":
+        # Ollama connectivity/model availability is checked by doctor; OCR request
+        # itself records per-formula errors if the local server is unavailable.
+        return True, None
+    return False, f"Unknown OCR engine: {source}"
+
+
+def effective_ocr_engines(config: dict[str, Any]) -> dict[str, Any]:
+    requested = configured_engine_names(config)
+    disabled: list[str] = []
+    unavailable: list[dict[str, str | None]] = []
+    enabled_and_available: list[str] = []
+    unknown: list[str] = []
+    for source in requested:
+        if source not in ENGINE_CONFIG:
+            unknown.append(source)
+            unavailable.append({"engine": source, "reason": "unknown OCR engine"})
+            continue
+        if not _engine_enabled(config, source):
+            disabled.append(source)
+            continue
+        ok, reason = engine_availability(source, config)
+        if ok:
+            enabled_and_available.append(source)
+        else:
+            unavailable.append({"engine": source, "reason": reason})
+    return {
+        "requested": requested,
+        "enabled_and_available": enabled_and_available,
+        "disabled": disabled,
+        "unavailable": unavailable,
+        "unknown": unknown,
+        "will_run": enabled_and_available,
+    }
+
+
+
+
+def candidate_priority_warnings(config: dict[str, Any]) -> list[str]:
+    warnings: list[str] = []
+    priority = [str(x) for x in config.get("candidate_selection", {}).get("priority", [])]
+    effective = effective_ocr_engines(config)
+    disabled = set(effective.get("disabled", []))
+    unavailable = {str(item.get("engine")): item.get("reason") for item in effective.get("unavailable", [])}
+    for source in priority:
+        if source in disabled:
+            warnings.append(f"candidate_selection.priority contains disabled engine {source}; existing candidates can still be selected, but OCR will not run it.")
+        elif source in unavailable:
+            warnings.append(f"candidate_selection.priority contains unavailable engine {source}: {unavailable[source]}")
+    return warnings
 
 def _has_usable_candidate(formula: dict[str, Any], source: str) -> bool:
     for candidate in formula.get("candidates", []):
@@ -139,28 +197,43 @@ def run_ocr(
         from_id=from_id,
         to_id=to_id,
     )
-    engine_names = configured_engine_names(config)
+    effective = effective_ocr_engines(config)
+    engine_names = list(effective["will_run"])
     if progress:
         print(
-            f"OCR: selected_formulas={len(formulas)}, engines={engine_names}, sequential=true",
+            f"OCR: selected_formulas={len(formulas)}, requested_engines={effective['requested']}, sequential=true",
             file=sys.stderr,
             flush=True,
         )
+        print(f"OCR effective engines: {engine_names}", file=sys.stderr, flush=True)
+        for source in effective.get("disabled", []):
+            print(f"skip engine {source}: disabled", file=sys.stderr, flush=True)
+        for item in effective.get("unavailable", []):
+            print(f"skip engine {item.get('engine')}: {item.get('reason')}", file=sys.stderr, flush=True)
+
+    for item in effective.get("unavailable", []):
+        source = str(item.get("engine"))
+        reason = str(item.get("reason") or "unavailable")
+        if source in ENGINE_CONFIG and _engine_enabled(config, source):
+            for formula in formulas:
+                _write_ocr_status(
+                    wp.ocr_dir / f"{formula['id']}_{source}.json",
+                    source,
+                    {"status": "skipped_unavailable", "formula_id": formula["id"], "error": reason, "started_at": time.time(), "finished_at": time.time()},
+                )
 
     for source in engine_names:
-        if source not in ENGINE_CONFIG:
-            if verbose or progress:
-                print(f"skip engine {source}: unknown OCR engine", file=sys.stderr, flush=True)
-            continue
-        if not _engine_enabled(config, source):
-            if verbose or progress:
-                print(f"skip engine {source}: disabled", file=sys.stderr, flush=True)
-            continue
         try:
             engine = _create_engine(source, config)
         except Exception as exc:
             if verbose or progress:
                 print(f"skip engine {source}: {exc}", file=sys.stderr, flush=True)
+            for formula in formulas:
+                _write_ocr_status(
+                    wp.ocr_dir / f"{formula['id']}_{source}.json",
+                    source,
+                    {"status": "skipped_unavailable", "formula_id": formula["id"], "error": str(exc), "started_at": time.time(), "finished_at": time.time()},
+                )
             continue
 
         pending = [f for f in formulas if force or not _has_usable_candidate(f, source)]

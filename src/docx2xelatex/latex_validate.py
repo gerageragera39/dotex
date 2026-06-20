@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +10,7 @@ from jinja2 import Template
 from .formula_filter import filter_formulas
 from .manifest import load_manifest, save_manifest
 from .paths import WorkPaths
+from .subprocess_utils import run_command
 from .utils import write_text
 
 VALIDATE_TEMPLATE = r"""\documentclass{article}
@@ -60,7 +60,7 @@ def validate_formula_candidate(
     if shutil.which(engine) is None:
         return {"status": "invalid", "error": f"{engine} not found", "tex": str(tex_path), "pdf": None, "log": None}
     cmd = [engine, "-interaction=nonstopmode", "-halt-on-error", tex_path.name]
-    proc = subprocess.run(cmd, cwd=out_dir, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    proc = run_command(cmd, cwd=out_dir, timeout=120)
     ok = proc.returncode == 0 and pdf_path.exists()
     if not log_path.exists():
         write_text(log_path, proc.stdout + "\n" + proc.stderr)

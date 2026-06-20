@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import json
 import shutil
-import subprocess
 import sys
 import time
 import urllib.error
@@ -15,6 +14,7 @@ from typing import Any, Iterable, Iterator, TypeVar
 from ..latex_clean import clean_latex_candidate
 from ..manifest import load_manifest, save_manifest
 from ..paths import WorkPaths
+from ..subprocess_utils import run_command
 from ..utils import write_json
 from .base import Candidate, has_candidate
 
@@ -94,7 +94,7 @@ def _prepare_ocr_image(png_path: Path, formula_id: str, wp: WorkPaths, config: d
         f"{max_side}x{max_side}>",
         str(out),
     ]
-    proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = run_command(cmd)
     if proc.returncode != 0 or not out.exists():
         return png_path
     return out

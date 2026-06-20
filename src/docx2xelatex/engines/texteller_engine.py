@@ -5,13 +5,44 @@ import os
 import re
 import shlex
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 from ..latex_clean import clean_latex_candidate
+from ..subprocess_utils import run_command
 from .base import Candidate
+
+TEXTELLER_REQUIRED_MODULES = {
+    "optimum": 'pip install "optimum[onnxruntime]>=1.24.0"',
+    "cv2": "pip install opencv-python-headless>=4.11.0.86",
+    "pyclipper": "pip install pyclipper>=1.3.0.post6",
+    "shapely": "pip install shapely>=2.1.0",
+    "torch": "pip install torch>=2.6.0",
+    "torchvision": "pip install torchvision>=0.21.0",
+    "transformers": "pip install transformers==4.47",
+    "wget": "pip install wget>=3.2",
+    "ray": 'pip install "ray[serve]>=2.44.1"',
+}
+
+
+def texteller_missing_modules() -> list[str]:
+    missing = []
+    for module in TEXTELLER_REQUIRED_MODULES:
+        try:
+            if importlib.util.find_spec(module) is None:
+                missing.append(module)
+        except ModuleNotFoundError:
+            missing.append(module)
+    return missing
+
+
+def texteller_install_hint(missing: list[str]) -> str | None:
+    if not missing:
+        return None
+    if "optimum" in missing:
+        return TEXTELLER_REQUIRED_MODULES["optimum"]
+    return "pip install -e external/TexTeller && pip install " + " ".join(sorted(missing))
 
 
 class TexTellerUnavailable(RuntimeError):
@@ -53,29 +84,43 @@ def texteller_status(config: dict[str, Any]) -> dict[str, Any]:
     texteller = config.get("texteller", {})
     repo = _repo_path(config)
     cli_path = shutil.which("texteller")
-    import_ok = importlib.util.find_spec("texteller") is not None
+    try:
+        import_ok = importlib.util.find_spec("texteller") is not None
+    except ModuleNotFoundError:
+        import_ok = False
     repo_exists = repo.exists()
     enabled = bool(texteller.get("enabled", True))
-    ok = bool(cli_path) or import_ok or repo_exists
+    missing_modules = texteller_missing_modules() if enabled else []
+    has_entrypoint = bool(cli_path) or import_ok or repo_exists
+    deps_ok = not missing_modules
+    ok = has_entrypoint and deps_ok
     if not enabled:
         label = "disabled"
+    elif not has_entrypoint:
+        label = "missing"
+    elif not deps_ok:
+        label = "missing_dependencies"
     elif cli_path or import_ok:
         label = "available"
-    elif repo_exists:
-        label = "repo_found"
     else:
-        label = "missing"
+        label = "repo_found"
     status: dict[str, Any] = {
         "enabled": enabled,
         "repo_path": str(repo),
         "repo_exists": repo_exists,
         "cli_path": cli_path,
         "import_ok": import_ok,
+        "package_import_ok": import_ok,
+        "missing_modules": missing_modules,
+        "install_hint": texteller_install_hint(missing_modules) if enabled else None,
         "ok": ok if enabled else True,
+        "will_run": bool(enabled and ok),
         "status": label,
     }
-    if enabled and not ok:
+    if enabled and not has_entrypoint:
         status["warning"] = "TexTeller is enabled but no CLI/import/repo was found; clone or install TexTeller, or disable texteller.enabled."
+    elif enabled and missing_modules:
+        status["warning"] = f"TexTeller unavailable: missing module {missing_modules[0]}. Install: {status['install_hint']}"
     return status
 
 
@@ -109,15 +154,7 @@ class TexTellerEngine:
         if self.repo_path.exists():
             env["PYTHONPATH"] = str(self.repo_path) + os.pathsep + env.get("PYTHONPATH", "")
         cwd = self.repo_path if self.repo_path.exists() else None
-        proc = subprocess.run(
-            cmd,
-            cwd=cwd,
-            env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=self.timeout,
-        )
+        proc = run_command(cmd, cwd=cwd, env=env, timeout=self.timeout)
         if proc.returncode != 0:
             raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or f"TexTeller exited with code {proc.returncode}")
         raw = _extract_latex(proc.stdout)

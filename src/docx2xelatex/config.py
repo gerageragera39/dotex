@@ -15,9 +15,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "trim": True,
         "background": "white",
     },
-    "ocr": {"engines": ["texteller", "pix2tex", "ollama_qwen"]},
+    "ocr": {"engines": ["pix2tex"]},
     "texteller": {
-        "enabled": True,
+        "enabled": False,
         "repo_path": "external/TexTeller",
         "timeout_seconds": 180,
         # Override if TexTeller changes CLI shape, e.g.
@@ -26,7 +26,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "pix2tex": {"enabled": True, "timeout_seconds": 180},
     "ollama": {
-        "enabled": True,
+        "enabled": False,
         "base_url": "http://localhost:11434",
         "model": "qwen3-vl:8b",
         "timeout_seconds": 1200,
@@ -43,7 +43,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "docx2tex": {"enabled": False, "priority": 2},
     "candidate_selection": {
-        "priority": ["texteller", "pix2tex", "ollama_qwen", "docx2tex"],
+        "priority": ["pix2tex", "texteller", "ollama_qwen", "docx2tex"],
         "reject_patterns": [r"\[\]\s*\[\]"],
         "max_explanation_chars": 20,
     },

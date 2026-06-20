@@ -75,7 +75,7 @@ Each formula goes through its own lifecycle:
 image → png → candidates → validation → selection → merge
 ```
 
-If a formula cannot be recognized or compiled, the final document is still generated. The original formula image stays in the Markdown and receives a `TODO_FORMULA_f0001` marker, so it can be fixed manually later.
+If a formula cannot be recognized or compiled, the final document is still generated with a PNG preview and a `TODO_FORMULA_f0001` marker, so it can be fixed manually later. Legacy WMF/EMF formula images are not allowed into `final.md` / `final.tex`.
 
 This makes the pipeline practical for real archival work.
 
@@ -113,7 +113,7 @@ flowchart TD
 | **Pandoc**               | Extracts text, paragraphs, lists, italics, bold text and media from DOCX                  |
 | **ImageMagick**          | Converts WMF/EMF formula previews into PNG                                                |
 | **TexTeller**           | Optional primary local formula OCR engine from `external/TexTeller`                       |
-| **pix2tex**              | Optional simple local formula OCR engine                                                  |
+| **pix2tex**              | Default simple local formula OCR engine                                                   |
 | **Ollama + qwen3-vl:8b** | Fallback local vision OCR engine                                                          |
 | **XeLaTeX**              | Validates every candidate formula and builds final PDF                                    |
 | **docx2tex**             | Optional: used only as an additional formula candidate source, not as final TeX generator |
@@ -144,7 +144,8 @@ Pandoc Markdown → final.md → clean final.tex → XeLaTeX
 
 * Your DOCX files are processed locally.
 * Formula images are processed locally.
-* OCR uses local Ollama at `http://localhost:11434`.
+* Default formula OCR uses local `pix2tex` in your Python environment.
+* Optional Ollama fallback uses local Ollama at `http://localhost:11434`.
 * The project intentionally rejects non-localhost Ollama URLs.
 * No document text, formulas or images are sent to external APIs.
 
@@ -162,22 +163,12 @@ Install these tools locally:
 | Pandoc             | DOCX → Markdown and Markdown → LaTeX |
 | MiKTeX or TeX Live | XeLaTeX compilation                  |
 | ImageMagick        | WMF/EMF → PNG                        |
-| Ollama             | Local fallback vision model runtime  |
-| `qwen3-vl:8b`      | Local fallback formula OCR model     |
-| pix2tex            | Optional local formula OCR engine    |
-| TexTeller          | Optional primary formula OCR engine  |
+| pix2tex            | Default local formula OCR engine     |
+| Ollama             | Optional fallback vision runtime     |
+| `qwen3-vl:8b`      | Optional fallback formula OCR model  |
+| TexTeller          | Optional advanced formula OCR engine |
 
-Install the model:
-
-```powershell
-ollama pull qwen3-vl:8b
-```
-
-Check that Ollama is running:
-
-```powershell
-ollama list
-```
+For the recommended default install, install pix2tex with the project extras. Ollama and TexTeller are opt-in.
 
 ---
 
@@ -214,7 +205,7 @@ The command creates and compiles a minimal document with Russian text, `\texttt{
 
 ---
 
-## Installation
+## Recommended Windows install
 
 Clone the repository:
 
@@ -230,10 +221,17 @@ py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 ```
 
-Install the project:
+Install the project with the default pix2tex OCR engine:
 
 ```powershell
-pip install -e .
+pip install -e ".[pix2tex]"
+```
+
+Optional helper commands are also available:
+
+```powershell
+docx2xelatex install-extras --engine pix2tex
+docx2xelatex install-extras --engine texteller
 ```
 
 Check your environment:
@@ -247,11 +245,11 @@ Expected checks:
 * Python
 * Pandoc
 * ImageMagick `magick`
-* XeLaTeX
-* TexTeller status
-* pix2tex status or warning if it is not installed
-* Ollama
-* `qwen3-vl:8b`
+* XeLaTeX and Russian XeLaTeX preset
+* pix2tex available
+* TexTeller disabled by default, or unavailable with an install hint
+* Ollama disabled by default unless you opt in
+* effective OCR engines, for example `will_run: ["pix2tex"]`
 
 ---
 
@@ -462,7 +460,7 @@ Candidate priority can be controlled in `config.yaml`:
 
 ```yaml
 candidate_selection:
-  priority: ["texteller", "pix2tex", "ollama_qwen", "docx2tex"]
+  priority: ["pix2tex", "texteller", "ollama_qwen", "docx2tex"]
 ```
 
 For my documents, `docx2tex` is usually more useful as a fallback candidate source than as the main converter.
@@ -477,59 +475,101 @@ The OCR stage keeps the same lifecycle:
 image → png → candidates → validate → select → merge
 ```
 
-The default engine order is:
+Two settings have different meanings:
+
+* `ocr.engines` controls which OCR engines actually run.
+* `candidate_selection.priority` controls which already-produced candidate is selected first after validation.
+
+Safe Windows default:
 
 ```yaml
 ocr:
-  engines: ["texteller", "pix2tex", "ollama_qwen"]
+  engines: ["pix2tex"]
+
+pix2tex:
+  enabled: true
+
+texteller:
+  enabled: false
+
+ollama:
+  enabled: false
 
 candidate_selection:
-  priority: ["texteller", "pix2tex", "ollama_qwen", "docx2tex"]
+  priority: ["pix2tex", "texteller", "ollama_qwen", "docx2tex"]
 ```
 
-Selection chooses the first independently validated candidate according to `candidate_selection.priority`. If TexTeller or pix2tex is unavailable, OCR records/prints a skip and Ollama remains available as the fallback engine. `doctor` reports TexTeller status and shows a warning when pix2tex is not installed.
+If an engine is disabled, it will not run even if it accidentally appears in `ocr.engines`. `doctor` and `config-show` report `effective_ocr_engines` with `requested`, `disabled`, `unavailable`, and `will_run`.
 
 ### Install pix2tex
 
-Inside your project virtual environment:
+Recommended:
 
 ```powershell
-.\.venv\Scripts\Activate.ps1
-pip install pix2tex
-# or, if you want its GUI extras:
-pip install "pix2tex[gui]"
+pip install -e ".[pix2tex]"
 ```
 
-Then check:
+Or use the helper:
 
 ```powershell
-docx2xelatex doctor --config config.yaml
+docx2xelatex install-extras --engine pix2tex
 ```
 
-### Clone or install TexTeller
+### Optional Ollama fallback
 
-TexTeller is optional and is read from `external/TexTeller` by default:
+Install and pull the local model:
+
+```powershell
+ollama pull qwen3-vl:8b
+ollama list
+```
+
+Enable it explicitly:
+
+```yaml
+ollama:
+  enabled: true
+  model: "qwen3-vl:8b"
+
+ocr:
+  engines: ["pix2tex", "ollama_qwen"]
+```
+
+### Optional TexTeller
+
+TexTeller is opt-in and read from `external/TexTeller` by default:
 
 ```powershell
 git clone https://github.com/OleehyO/TexTeller.git external/TexTeller
+pip install -e external/TexTeller
+pip install -e ".[texteller-deps]"
 ```
 
-Install it in the same environment if you want the `texteller` console command:
+If `doctor` specifically reports `ModuleNotFoundError: optimum`, the minimal fix is:
 
 ```powershell
-pip install -e external/TexTeller
+pip install "optimum[onnxruntime]>=1.24.0"
 ```
 
-If the CLI shape changes, configure the adapter command in `config.yaml`:
+Or use:
+
+```powershell
+docx2xelatex install-extras --engine texteller
+```
+
+Enable it explicitly:
 
 ```yaml
 texteller:
   enabled: true
   repo_path: "external/TexTeller"
   timeout_seconds: 180
-  command: ["texteller", "inference", "{image_path}"]
-  # or: command: ["python", "-m", "texteller.cli", "inference", "{image_path}"]
+
+ocr:
+  engines: ["texteller", "pix2tex"]
 ```
+
+If TexTeller is missing a dependency such as `optimum`, `doctor` reports `missing_modules` and an exact `install_hint` instead of failing during OCR.
 
 ### Process only one large formula
 
@@ -584,10 +624,10 @@ Important options:
 
 ```yaml
 ocr:
-  engines: ["texteller", "pix2tex", "ollama_qwen"]
+  engines: ["pix2tex"]
 
 texteller:
-  enabled: true
+  enabled: false
   repo_path: "external/TexTeller"
   timeout_seconds: 180
   command: null   # auto; or set a list/string with {image_path}
@@ -597,7 +637,7 @@ pix2tex:
   timeout_seconds: 180
 
 ollama:
-  enabled: true
+  enabled: false
   base_url: "http://localhost:11434"
   model: "qwen3-vl:8b"
   timeout_seconds: 1200
@@ -606,7 +646,7 @@ ollama:
   num_predict: null
 
 candidate_selection:
-  priority: ["texteller", "pix2tex", "ollama_qwen", "docx2tex"]
+  priority: ["pix2tex", "texteller", "ollama_qwen", "docx2tex"]
 
 latex:
   engine: xelatex
@@ -636,7 +676,7 @@ pix2tex:
   enabled: false
 
 ollama:
-  enabled: true
+  enabled: false
 ```
 
 Or change engine run order:
@@ -669,6 +709,8 @@ ollama:
 | ------------------------- | ----------------------------------------------------------------- |
 | `doctor`                  | Check local dependencies and Russian XeLaTeX preset               |
 | `test-latex`              | Compile a minimal Russian XeLaTeX smoke-test document             |
+| `config-show`              | Show merged config and effective OCR engines                      |
+| `install-extras`           | Install optional pix2tex or TexTeller dependencies                |
 | `init-config`             | Create YAML config                                                |
 | `inspect-docx`            | Count DOCX formula/media internals without printing document text |
 | `pandoc-md`               | Convert DOCX to Markdown and extract media                        |
@@ -732,6 +774,41 @@ latex:
 ```
 
 Do not enable `use_babel: true` together with `use_polyglossia: true`; build validation rejects that combination.
+
+### UnicodeDecodeError from subprocess output
+
+This should be impossible in current versions: all external commands are captured in bytes mode and decoded as UTF-8 with replacement. If it happens, run:
+
+```powershell
+docx2xelatex doctor --config $Config
+```
+
+and file an issue with the command output.
+
+### `final.tex` contains `includegraphics` for `.wmf` / `.emf`
+
+This is a merge invariant failure. Run:
+
+```powershell
+docx2xelatex merge --workdir $Build --config $Config --strict
+Get-Content "$Build\merge-unresolved.json"
+```
+
+`build` refuses to run Pandoc if `final.md` still contains manifest formula WMF/EMF references. Unresolved formulas are replaced with PNG previews plus `TODO_FORMULA_*`, not WMF/EMF.
+
+### TexTeller `ModuleNotFoundError: optimum`
+
+Install the missing dependency:
+
+```powershell
+pip install "optimum[onnxruntime]>=1.24.0"
+```
+
+Then check:
+
+```powershell
+docx2xelatex doctor --config $Config
+```
 
 ### Ollama unavailable
 

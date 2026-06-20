@@ -16,15 +16,16 @@ from .config import load_config, write_default_config
 from .engines.docx2tex_tex import add_docx2tex_candidates as add_docx2tex_stage
 from .engines.pix2tex_engine import pix2tex_status
 from .engines.texteller_engine import texteller_status
-from .ocr_pipeline import configured_engine_names, run_ocr
+from .ocr_pipeline import candidate_priority_warnings, effective_ocr_engines, run_ocr
 from .image_convert import render_images as render_images_stage
 from .latex_validate import validate_manifest
 from .manifest import create_manifest, load_manifest
-from .merge_markdown import merge_markdown as merge_stage
+from .merge_markdown import MergeInvariantError, merge_markdown as merge_stage
 from .pandoc_stage import run_pandoc_docx_to_markdown
 from .paths import WorkPaths
 from .report import generate_report
 from .select_candidate import select_candidates
+from .subprocess_utils import run_command
 from .utils import command_exists, write_json
 
 app = typer.Typer(help="Local privacy-first DOCX → Markdown → formula OCR → clean XeLaTeX pipeline.", no_args_is_help=True)
@@ -62,21 +63,26 @@ def doctor(config: Optional[Path] = typer.Option(None, "--config", help="YAML co
         "xelatex": {"path": shutil.which(cfg.get("latex", {}).get("engine", "xelatex")), "ok": command_exists(cfg.get("latex", {}).get("engine", "xelatex"))},
         "latex_config": latex_doctor_checks(cfg),
         "ocr": {"engines": cfg.get("ocr", {}).get("engines")},
+        "effective_ocr_engines": effective_ocr_engines(cfg),
+        "candidate_priority_warnings": candidate_priority_warnings(cfg),
         "texteller": texteller_status(cfg),
         "pix2tex": _pix2tex_doctor_status(cfg),
         "ollama": {"enabled": bool(ollama.get("enabled", True)), "base_url": ollama.get("base_url"), "ok": False, "model": ollama.get("model"), "model_ok": False},
     }
     base = str(ollama.get("base_url", "http://localhost:11434")).rstrip("/")
-    try:
-        host = __import__("urllib.parse").parse.urlparse(base).hostname
-        if host not in {"localhost", "127.0.0.1", "::1"}:
-            raise RuntimeError("non-local Ollama URL refused")
-        with urllib.request.urlopen(f"{base}/api/tags", timeout=5) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        models = [m.get("name") for m in data.get("models", [])]
-        report["ollama"] = {"enabled": bool(ollama.get("enabled", True)), "base_url": base, "ok": True, "model": ollama.get("model"), "model_ok": ollama.get("model") in models, "available_models": models}
-    except Exception as exc:
-        report["ollama"] = {"enabled": bool(ollama.get("enabled", True)), "base_url": base, "ok": False, "model": ollama.get("model"), "model_ok": False, "error": str(exc)}
+    if not bool(ollama.get("enabled", True)):
+        report["ollama"] = {"enabled": False, "status": "disabled", "base_url": base, "ok": True, "model": ollama.get("model"), "model_ok": None}
+    else:
+        try:
+            host = __import__("urllib.parse").parse.urlparse(base).hostname
+            if host not in {"localhost", "127.0.0.1", "::1"}:
+                raise RuntimeError("non-local Ollama URL refused")
+            with urllib.request.urlopen(f"{base}/api/tags", timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            models = [m.get("name") for m in data.get("models", [])]
+            report["ollama"] = {"enabled": True, "status": "available", "base_url": base, "ok": True, "model": ollama.get("model"), "model_ok": ollama.get("model") in models, "available_models": models}
+        except Exception as exc:
+            report["ollama"] = {"enabled": True, "status": "unavailable", "base_url": base, "ok": False, "model": ollama.get("model"), "model_ok": False, "error": str(exc)}
     _echo_json(report)
 
 
@@ -84,6 +90,34 @@ def doctor(config: Optional[Path] = typer.Option(None, "--config", help="YAML co
 def init_config(out: Path = typer.Option(..., "--out", help="Output YAML config path.")) -> None:
     path = write_default_config(out)
     typer.echo(f"Wrote {path}")
+
+
+@app.command("install-extras")
+def install_extras(engine: str = typer.Option(..., "--engine", help="Install optional dependencies: pix2tex or texteller.")) -> None:
+    """Install optional OCR dependencies into the current Python environment."""
+    if engine == "pix2tex":
+        cmd = [sys.executable, "-m", "pip", "install", "-e", ".[pix2tex]"]
+    elif engine == "texteller":
+        cmd = [sys.executable, "-m", "pip", "install", "-e", "external/TexTeller"]
+        typer.echo("Installing TexTeller package from external/TexTeller ...")
+        first = run_command(cmd, timeout=1200)
+        if first.returncode != 0:
+            _echo_json({"status": "failed", "cmd": first.cmd, "stdout": first.stdout, "stderr": first.stderr})
+            raise typer.Exit(1)
+        cmd = [sys.executable, "-m", "pip", "install", "-e", ".[texteller-deps]"]
+    else:
+        raise typer.BadParameter("engine must be pix2tex or texteller")
+    result = run_command(cmd, timeout=1200)
+    _echo_json({"status": "ok" if result.returncode == 0 else "failed", "cmd": result.cmd, "stdout": result.stdout[-3000:], "stderr": result.stderr[-3000:]})
+    if result.returncode != 0:
+        raise typer.Exit(1)
+
+
+@app.command("config-show")
+def config_show(config: Optional[Path] = typer.Option(None, "--config")) -> None:
+    """Show merged config plus effective OCR engine plan."""
+    cfg = _cfg(config)
+    _echo_json({"config": cfg, "effective_ocr_engines": effective_ocr_engines(cfg), "candidate_priority_warnings": candidate_priority_warnings(cfg)})
 
 
 @app.command("inspect-docx")
@@ -158,7 +192,8 @@ def ocr(
 
         m = load_manifest(workdir)
         formulas = filter_formulas(list(m.get("formulas", [])), only_id=only_id, limit=limit, from_id=from_id, to_id=to_id)
-        engines = configured_engine_names(cfg)
+        effective = effective_ocr_engines(cfg)
+        engines = list(effective["will_run"])
         todo = {
             engine: [
                 f["id"]
@@ -177,7 +212,7 @@ def ocr(
             f["id"]: {engine: str(WorkPaths.from_workdir(workdir).ocr_dir / f"{f['id']}_{engine}.json") for engine in engines}
             for f in formulas
         }
-        _echo_json({"would_ocr": todo, "formula_count": len(formulas), "engines": engines, "status_files": status_files, "sequential": True})
+        _echo_json({"would_ocr": todo, "formula_count": len(formulas), "engines": engines, "effective_ocr_engines": effective, "status_files": status_files, "sequential": True})
         return
     m = run_ocr(workdir, cfg, force=force, progress=progress, verbose=verbose, only_id=only_id, limit=limit, from_id=from_id, to_id=to_id)
     typer.echo(f"OCR candidates recorded for {len(m.get('formulas', []))} formulas")
@@ -225,11 +260,20 @@ def report(workdir: Path = typer.Option(..., "--workdir"), config: Optional[Path
 
 
 @app.command("merge")
-def merge(workdir: Path = typer.Option(..., "--workdir"), config: Optional[Path] = typer.Option(None, "--config")) -> None:
-    out = merge_stage(workdir, _cfg(config))
-    typer.echo(f"Wrote {out}")
-
-
+def merge(
+    workdir: Path = typer.Option(..., "--workdir"),
+    config: Optional[Path] = typer.Option(None, "--config"),
+    strict: bool = typer.Option(True, "--strict/--no-strict", help="Fail if any manifest formula WMF/EMF reference remains."),
+) -> None:
+    try:
+        out = merge_stage(workdir, _cfg(config), strict=strict)
+        typer.echo(f"Wrote {out}")
+    except MergeInvariantError as exc:
+        _echo_json({"status": "failed", "error": str(exc), "unresolved": exc.unresolved})
+        raise typer.Exit(1)
+    except RuntimeError as exc:
+        _echo_json({"status": "failed", "error": str(exc)})
+        raise typer.Exit(1)
 
 
 @app.command("test-latex")
@@ -241,8 +285,27 @@ def test_latex(workdir: Path = typer.Option(..., "--workdir"), config: Optional[
 
 @app.command("build")
 def build_cmd(workdir: Path = typer.Option(..., "--workdir"), config: Optional[Path] = typer.Option(None, "--config"), force: bool = typer.Option(False, "--force")) -> None:
-    result = build_stage(workdir, _cfg(config), force=force)
-    _echo_json(result)
+    try:
+        result = build_stage(workdir, _cfg(config), force=force)
+        _echo_json(result)
+    except MergeInvariantError as exc:
+        _echo_json({"status": "failed", "error": str(exc), "unresolved": exc.unresolved})
+        raise typer.Exit(1)
+    except RuntimeError as exc:
+        _echo_json({"status": "failed", "error": str(exc)})
+        raise typer.Exit(1)
+
+
+
+def _formula_summary(manifest: dict) -> dict:
+    formulas = list(manifest.get("formulas", []))
+    unresolved_ids = [str(f.get("id")) for f in formulas if not (f.get("selected_latex") or "").strip()]
+    return {
+        "formula_total": len(formulas),
+        "formula_selected": len(formulas) - len(unresolved_ids),
+        "formula_unresolved": len(unresolved_ids),
+        "unresolved_ids": unresolved_ids,
+    }
 
 
 @app.command("full")
@@ -250,17 +313,29 @@ def full(input_path: Path = typer.Option(..., "--input"), workdir: Path = typer.
     cfg = _cfg(config)
     wp = WorkPaths.from_workdir(workdir)
     wp.ensure()
-    run_pandoc_docx_to_markdown(input_path, workdir, cfg, force=force)
-    create_manifest(wp.text_md, workdir, cfg, force=force)
-    render_images_stage(workdir, cfg, force=force)
-    run_ocr(workdir, cfg, force=force)
-    validate_manifest(workdir, cfg, force=force)
-    select_candidates(workdir, cfg)
-    generate_report(workdir, cfg)
-    merge_stage(workdir, cfg)
-    result = build_stage(workdir, cfg, force=force)
-    typer.echo("Full pipeline finished. Per-formula failures, if any, are recorded in manifest/report.")
-    _echo_json(result)
+    try:
+        run_pandoc_docx_to_markdown(input_path, workdir, cfg, force=force)
+        manifest = create_manifest(wp.text_md, workdir, cfg, force=force)
+        render_images_stage(workdir, cfg, force=force)
+        run_ocr(workdir, cfg, force=force)
+        validate_manifest(workdir, cfg, force=force)
+        manifest = select_candidates(workdir, cfg)
+        generate_report(workdir, cfg)
+        merge_stage(workdir, cfg, strict=True)
+        result = build_stage(workdir, cfg, force=force)
+        summary = _formula_summary(manifest)
+        status = "ok" if result.get("status") in {"ok", "skipped"} else "failed"
+        _echo_json({"status": status, **summary, **result})
+        if status == "failed":
+            raise typer.Exit(1)
+    except MergeInvariantError as exc:
+        manifest = load_manifest(workdir) if wp.manifest_json.exists() else {"formulas": []}
+        _echo_json({"status": "failed", **_formula_summary(manifest), "error": str(exc), "unresolved": exc.unresolved})
+        raise typer.Exit(1)
+    except RuntimeError as exc:
+        manifest = load_manifest(workdir) if wp.manifest_json.exists() else {"formulas": []}
+        _echo_json({"status": "failed", **_formula_summary(manifest), "error": str(exc)})
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

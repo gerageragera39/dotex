@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
 
 from .manifest import load_manifest, save_manifest
 from .paths import WorkPaths
+from .subprocess_utils import run_command
 
 
 def render_images(workdir: str | Path, config: dict[str, Any], force: bool = False) -> dict[str, Any]:
@@ -37,7 +37,7 @@ def render_images(workdir: str | Path, config: dict[str, Any], force: bool = Fal
                 if trim:
                     cmd.extend(["-trim", "+repage"])
                 cmd.append(str(dst))
-                proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                proc = run_command(cmd)
                 if proc.returncode != 0:
                     raise RuntimeError(proc.stderr or proc.stdout or f"magick exited {proc.returncode}")
             formula["png_status"] = "ok"

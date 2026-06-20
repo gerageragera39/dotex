@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -36,8 +35,10 @@ def command_exists(name: str) -> bool:
     return shutil.which(name) is not None
 
 
-def run(cmd: list[str], cwd: str | Path | None = None, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, cwd=cwd, timeout=timeout, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def run(cmd: list[str], cwd: str | Path | None = None, timeout: int | None = None):
+    from .subprocess_utils import run_command
+
+    return run_command(cmd, cwd=cwd, timeout=timeout)
 
 
 def relpath_or_abs(path: str | Path, start: str | Path) -> str:

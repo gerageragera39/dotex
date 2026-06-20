@@ -33,7 +33,7 @@ def is_bad_candidate(candidate: dict[str, Any], config: dict[str, Any]) -> tuple
 
 def select_candidates(workdir: str | Path, config: dict[str, Any]) -> dict[str, Any]:
     manifest = load_manifest(workdir)
-    priority = config.get("candidate_selection", {}).get("priority", ["docx2tex", "ollama_qwen"])
+    priority = config.get("candidate_selection", {}).get("priority", ["pix2tex", "texteller", "ollama_qwen", "docx2tex"])
     order = {source: idx for idx, source in enumerate(priority)}
     for formula in manifest.get("formulas", []):
         chosen = None

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
 
+from .manifest import load_manifest
+from .merge_markdown import MergeInvariantError, scan_forbidden_formula_refs
 from .paths import WorkPaths
+from .subprocess_utils import run_command
 from .utils import write_text
 
 
@@ -161,6 +163,15 @@ def pandoc_final_to_tex(workdir: str | Path, config: dict[str, Any], force: bool
         return wp.final_tex
     if not wp.final_md.exists():
         raise FileNotFoundError(f"final.md not found: {wp.final_md}")
+    if wp.manifest_json.exists():
+        final_md_text = wp.final_md.read_text(encoding="utf-8", errors="replace")
+        manifest = load_manifest(workdir)
+        unresolved = scan_forbidden_formula_refs(final_md_text, manifest, workdir, config)
+        if unresolved:
+            from .utils import write_json
+
+            write_json(wp.root / "merge-unresolved.json", unresolved)
+            raise MergeInvariantError("Build refused: final.md still contains WMF/EMF formula references; run merge --strict", unresolved)
     cmd = [
         "pandoc",
         str(wp.final_md),
@@ -175,9 +186,12 @@ def pandoc_final_to_tex(workdir: str | Path, config: dict[str, Any], force: bool
     for variable in _pandoc_latex_variables(config):
         cmd.extend(["-V", variable])
     cmd.extend(["--resource-path", str(wp.root), "-o", str(wp.final_tex)])
-    proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = run_command(cmd)
     if proc.returncode != 0:
-        raise RuntimeError(f"pandoc final build failed ({proc.returncode})\n{proc.stdout}\n{proc.stderr}")
+        log = wp.root / "pandoc-final.log"
+        tail = (proc.stdout + "\n" + proc.stderr)[-3000:]
+        write_text(log, f"CMD: {' '.join(proc.cmd)}\nRETURN: {proc.returncode}\nTIMED_OUT: {proc.timed_out}\n\nSTDOUT:\n{proc.stdout}\n\nSTDERR:\n{proc.stderr}\n")
+        raise RuntimeError(f"pandoc final build failed ({proc.returncode}); log={log}\n{tail}")
     return wp.final_tex
 
 
@@ -192,18 +206,33 @@ def compile_tex(tex_path: str | Path, config: dict[str, Any], timeout: int = 240
     if bool(latex.get("halt_on_error", False)):
         args.append("-halt-on-error")
     args.append(tex.name)
-    last = None
-    for _ in range(2):
-        last = subprocess.run(args, cwd=tex.parent, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
-        if last.returncode != 0 and latex.get("halt_on_error", False):
-            break
+    last = run_command(args, cwd=tex.parent, timeout=timeout)
+    runs = [last]
+    rerun_markers = (
+        "Rerun to get cross-references right",
+        "Label(s) may have changed",
+        "There were undefined references",
+        "Rerun LaTeX",
+    )
+    output = f"{last.stdout}\n{last.stderr}"
+    if last.returncode == 0 and any(marker in output for marker in rerun_markers):
+        last = run_command(args, cwd=tex.parent, timeout=timeout)
+        runs.append(last)
     pdf = tex.with_suffix(".pdf")
     log = tex.with_suffix(".log")
     ok = pdf.exists() and last is not None and last.returncode == 0
-    err = None if ok else ((last.stdout + "\n" + last.stderr)[-2000:] if last else "xelatex was not run")
-    if not log.exists() and last:
-        write_text(log, last.stdout + "\n" + last.stderr)
-    return {"status": "ok" if ok else "failed", "pdf": str(pdf) if pdf.exists() else None, "log": str(log) if log.exists() else None, "error": err}
+    err = None if ok else ((last.stdout + "\n" + last.stderr)[-3000:] if last else "xelatex was not run")
+    build_log = tex.with_suffix(".build.log")
+    if runs:
+        chunks = []
+        for idx, run in enumerate(runs, start=1):
+            chunks.append(
+                f"=== xelatex run {idx} ===\n"
+                f"CMD: {' '.join(run.cmd)}\nRETURN: {run.returncode}\nTIMED_OUT: {run.timed_out}\n"
+                f"\nSTDOUT:\n{run.stdout}\n\nSTDERR:\n{run.stderr}\n"
+            )
+        write_text(build_log, "\n".join(chunks))
+    return {"status": "ok" if ok else "failed", "pdf": str(pdf) if pdf.exists() else None, "log": str(log) if log.exists() else None, "build_log": str(build_log) if build_log.exists() else None, "error": err}
 
 
 def compile_final_pdf(workdir: str | Path, config: dict[str, Any]) -> dict[str, Any]:
@@ -251,7 +280,7 @@ def run_latex_smoke_test(workdir: str | Path, config: dict[str, Any]) -> dict[st
 def _fc_match(font: str) -> dict[str, Any]:
     if shutil.which("fc-match") is None:
         return {"method": "fc-match", "available": False, "ok": None, "match": None}
-    proc = subprocess.run(["fc-match", font], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+    proc = run_command(["fc-match", font], timeout=10)
     out = proc.stdout.strip()
     return {"method": "fc-match", "available": True, "ok": proc.returncode == 0 and bool(out), "match": out or None, "error": proc.stderr.strip() or None}
 

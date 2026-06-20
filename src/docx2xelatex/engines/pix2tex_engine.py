@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +26,7 @@ def pix2tex_status() -> dict[str, Any]:
     return {
         "enabled_dependency": ok,
         "ok": ok,
-        "warning": None if ok else "pix2tex is not installed; install optional dependency with `pip install pix2tex[gui]` or `pip install pix2tex`.",
+        "warning": None if ok else 'pix2tex is not installed; install optional dependency with `pip install -e ".[pix2tex]"`.',
     }
 
 
@@ -32,6 +34,9 @@ class Pix2TexEngine:
     source = "pix2tex"
 
     def __init__(self, config: dict[str, Any]):
+        os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
+        warnings.filterwarnings("ignore", message=".*Albumentations.*update.*")
+        warnings.filterwarnings("ignore", message=".*Pydantic serializer warnings.*")
         pix_cfg = config.get("pix2tex", {})
         self.timeout = int(pix_cfg.get("timeout_seconds", 180))
         self._model = None

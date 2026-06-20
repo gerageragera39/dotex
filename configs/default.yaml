@@ -15,11 +15,9 @@ images:
   background: white
 ocr:
   engines:
-  - texteller
   - pix2tex
-  - ollama_qwen
 texteller:
-  enabled: true
+  enabled: false
   repo_path: external/TexTeller
   timeout_seconds: 180
   command: null
@@ -27,7 +25,7 @@ pix2tex:
   enabled: true
   timeout_seconds: 180
 ollama:
-  enabled: true
+  enabled: false
   base_url: http://localhost:11434
   model: qwen3-vl:8b
   timeout_seconds: 1200
@@ -43,8 +41,8 @@ docx2tex:
   priority: 2
 candidate_selection:
   priority:
-  - texteller
   - pix2tex
+  - texteller
   - ollama_qwen
   - docx2tex
   reject_patterns:

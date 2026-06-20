@@ -43,17 +43,14 @@ def test_pandoc_xelatex_polyglossia_build_avoids_lang_and_font_variables(monkeyp
     (tmp_path / "final.md").write_text("Тест", encoding="utf-8")
     captured = {}
 
-    class Proc:
-        returncode = 0
-        stdout = ""
-        stderr = ""
+    from docx2xelatex.subprocess_utils import CommandResult
 
-    def fake_run(cmd, text, stdout, stderr):
+    def fake_run_command(cmd, cwd=None, timeout=None, env=None, stdin_devnull=True):
         captured["cmd"] = cmd
         (tmp_path / "final.tex").write_text("ok", encoding="utf-8")
-        return Proc()
+        return CommandResult(cmd=list(cmd), returncode=0, stdout="", stderr="", cwd=str(cwd) if cwd else None)
 
-    monkeypatch.setattr("docx2xelatex.build_latex.subprocess.run", fake_run)
+    monkeypatch.setattr("docx2xelatex.build_latex.run_command", fake_run_command)
     pandoc_final_to_tex(tmp_path, DEFAULT_CONFIG, force=True)
     cmd = captured["cmd"]
     assert "-V" in cmd

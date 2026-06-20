@@ -10,8 +10,11 @@ from docx2xelatex.select_candidate import select_candidates
 
 
 def test_default_multi_engine_config():
-    assert DEFAULT_CONFIG["ocr"]["engines"] == ["texteller", "pix2tex", "ollama_qwen"]
-    assert DEFAULT_CONFIG["candidate_selection"]["priority"] == ["texteller", "pix2tex", "ollama_qwen", "docx2tex"]
+    assert DEFAULT_CONFIG["ocr"]["engines"] == ["pix2tex"]
+    assert DEFAULT_CONFIG["pix2tex"]["enabled"] is True
+    assert DEFAULT_CONFIG["texteller"]["enabled"] is False
+    assert DEFAULT_CONFIG["ollama"]["enabled"] is False
+    assert DEFAULT_CONFIG["candidate_selection"]["priority"] == ["pix2tex", "texteller", "ollama_qwen", "docx2tex"]
     assert DEFAULT_CONFIG["ollama"]["timeout_seconds"] == 1200
 
 
