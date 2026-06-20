@@ -1,10 +1,23 @@
-% Clean XeLaTeX header for docx2xelatex output.
+% Russian XeLaTeX preset used by docx2xelatex generated headers.
+% The actual build renders this from config into build/header-xelatex-ru.tex.
 \usepackage{fontspec}
+\setmainfont{Times New Roman}
+\setsansfont{Arial}
+\setmonofont{Consolas}
+
 \usepackage{polyglossia}
-\setdefaultlanguage{russian}
-\usepackage{amsmath,amssymb,amsfonts,mathtools}
+\setmainlanguage{russian}
+\setotherlanguage{english}
+
+\newfontfamily\cyrillicfont{Times New Roman}[Script=Cyrillic]
+\newfontfamily\cyrillicfontsf{Arial}[Script=Cyrillic]
+\newfontfamily\cyrillicfonttt{Consolas}[Script=Cyrillic]
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathtools}
+% \usepackage{unicode-math} % enable with latex.use_unicode_math=true; must stay after mathtools.
 \usepackage{upgreek,tensor,xfrac}
-\usepackage{unicode-math}
 \providecommand{\Uptheta}{\Theta}
 \providecommand{\Upomega}{\Omega}
 \providecommand{\Updelta}{\Delta}

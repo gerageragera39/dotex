@@ -8,6 +8,7 @@ from typing import Any
 
 from jinja2 import Template
 
+from .formula_filter import filter_formulas
 from .manifest import load_manifest, save_manifest
 from .paths import WorkPaths
 from .utils import write_text
@@ -81,9 +82,24 @@ def _summarize_latex_error(log_path: Path, stdout: str, stderr: str) -> str:
     return "\n".join(lines) or (text[-1200:] if text else "xelatex failed")
 
 
-def validate_manifest(workdir: str | Path, config: dict[str, Any], force: bool = False) -> dict[str, Any]:
+def validate_manifest(
+    workdir: str | Path,
+    config: dict[str, Any],
+    force: bool = False,
+    only_id: str | None = None,
+    limit: int | None = None,
+    from_id: str | None = None,
+    to_id: str | None = None,
+) -> dict[str, Any]:
     manifest = load_manifest(workdir)
-    for formula in manifest.get("formulas", []):
+    formulas = filter_formulas(
+        list(manifest.get("formulas", [])),
+        only_id=only_id,
+        limit=limit,
+        from_id=from_id,
+        to_id=to_id,
+    )
+    for formula in formulas:
         for idx, candidate in enumerate(formula.get("candidates", []), start=1):
             if candidate.get("validation_status") in {"valid", "invalid"} and not force:
                 continue

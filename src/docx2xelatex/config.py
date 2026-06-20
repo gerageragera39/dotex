@@ -15,11 +15,21 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "trim": True,
         "background": "white",
     },
+    "ocr": {"engines": ["texteller", "pix2tex", "ollama_qwen"]},
+    "texteller": {
+        "enabled": True,
+        "repo_path": "external/TexTeller",
+        "timeout_seconds": 180,
+        # Override if TexTeller changes CLI shape, e.g.
+        # ["python", "-m", "texteller.cli", "inference", "{image_path}"]
+        "command": None,
+    },
+    "pix2tex": {"enabled": True, "timeout_seconds": 180},
     "ollama": {
         "enabled": True,
         "base_url": "http://localhost:11434",
         "model": "qwen3-vl:8b",
-        "timeout_seconds": 600,
+        "timeout_seconds": 1200,
         "temperature": 0,
         # Quality-first default: do not cap generated tokens unless user opts in.
         "num_predict": None,
@@ -33,7 +43,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "docx2tex": {"enabled": False, "priority": 2},
     "candidate_selection": {
-        "priority": ["docx2tex", "ollama_qwen"],
+        "priority": ["texteller", "pix2tex", "ollama_qwen", "docx2tex"],
         "reject_patterns": [r"\[\]\s*\[\]"],
         "max_explanation_chars": 20,
     },
@@ -41,12 +51,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "engine": "xelatex",
         "mainfont": "Times New Roman",
         "sansfont": "Arial",
-        "monofont": "Courier New",
+        "monofont": "Consolas",
         "documentclass": "article",
         "fontsize": "12pt",
         "lang": "ru-RU",
+        "main_language": "russian",
+        "other_languages": ["english"],
         "build_pdf": True,
         "halt_on_error": False,
+        "use_polyglossia": True,
+        "use_babel": False,
+        "use_unicode_math": False,
     },
     "merge": {
         "invalid_formula_policy": "keep_image_with_todo",

@@ -11,10 +11,12 @@ from typing import Optional
 
 import typer
 
-from .build_latex import build as build_stage
+from .build_latex import build as build_stage, latex_doctor_checks, run_latex_smoke_test
 from .config import load_config, write_default_config
 from .engines.docx2tex_tex import add_docx2tex_candidates as add_docx2tex_stage
-from .engines.ollama_qwen import run_ocr
+from .engines.pix2tex_engine import pix2tex_status
+from .engines.texteller_engine import texteller_status
+from .ocr_pipeline import configured_engine_names, run_ocr
 from .image_convert import render_images as render_images_stage
 from .latex_validate import validate_manifest
 from .manifest import create_manifest, load_manifest
@@ -36,6 +38,18 @@ def _echo_json(data: dict) -> None:
     typer.echo(json.dumps(data, ensure_ascii=False, indent=2))
 
 
+def _pix2tex_doctor_status(cfg: dict) -> dict:
+    enabled = bool(cfg.get("pix2tex", {}).get("enabled", True))
+    status = {**pix2tex_status(), "enabled": enabled}
+    if not enabled:
+        status["ok"] = True
+        status["status"] = "disabled"
+        status.pop("warning", None)
+    else:
+        status["status"] = "available" if status.get("ok") else "missing"
+    return status
+
+
 @app.command()
 def doctor(config: Optional[Path] = typer.Option(None, "--config", help="YAML config path.")) -> None:
     """Check local tools and Ollama model availability. Installs nothing."""
@@ -46,7 +60,11 @@ def doctor(config: Optional[Path] = typer.Option(None, "--config", help="YAML co
         "pandoc": {"path": shutil.which("pandoc"), "ok": command_exists("pandoc")},
         "magick": {"path": shutil.which("magick"), "ok": command_exists("magick")},
         "xelatex": {"path": shutil.which(cfg.get("latex", {}).get("engine", "xelatex")), "ok": command_exists(cfg.get("latex", {}).get("engine", "xelatex"))},
-        "ollama": {"base_url": ollama.get("base_url"), "ok": False, "model": ollama.get("model"), "model_ok": False},
+        "latex_config": latex_doctor_checks(cfg),
+        "ocr": {"engines": cfg.get("ocr", {}).get("engines")},
+        "texteller": texteller_status(cfg),
+        "pix2tex": _pix2tex_doctor_status(cfg),
+        "ollama": {"enabled": bool(ollama.get("enabled", True)), "base_url": ollama.get("base_url"), "ok": False, "model": ollama.get("model"), "model_ok": False},
     }
     base = str(ollama.get("base_url", "http://localhost:11434")).rstrip("/")
     try:
@@ -56,9 +74,9 @@ def doctor(config: Optional[Path] = typer.Option(None, "--config", help="YAML co
         with urllib.request.urlopen(f"{base}/api/tags", timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         models = [m.get("name") for m in data.get("models", [])]
-        report["ollama"] = {"base_url": base, "ok": True, "model": ollama.get("model"), "model_ok": ollama.get("model") in models, "available_models": models}
+        report["ollama"] = {"enabled": bool(ollama.get("enabled", True)), "base_url": base, "ok": True, "model": ollama.get("model"), "model_ok": ollama.get("model") in models, "available_models": models}
     except Exception as exc:
-        report["ollama"] = {"base_url": base, "ok": False, "model": ollama.get("model"), "model_ok": False, "error": str(exc)}
+        report["ollama"] = {"enabled": bool(ollama.get("enabled", True)), "base_url": base, "ok": False, "model": ollama.get("model"), "model_ok": False, "error": str(exc)}
     _echo_json(report)
 
 
@@ -127,27 +145,41 @@ def ocr(
     progress: bool = typer.Option(True, "--progress/--no-progress", help="Show tqdm-style progress and status hints."),
     verbose: bool = typer.Option(False, "--verbose", help="Print per-formula start/skip/done messages."),
     timeout_seconds: Optional[int] = typer.Option(None, "--timeout-seconds", help="Override Ollama per-formula request timeout."),
+    only_id: Optional[str] = typer.Option(None, "--only-id", help="Process one formula id, e.g. f0001."),
+    limit: Optional[int] = typer.Option(None, "--limit", help="Process at most N formulas after id filters."),
+    from_id: Optional[str] = typer.Option(None, "--from-id", help="Process formulas with id >= this value."),
+    to_id: Optional[str] = typer.Option(None, "--to-id", help="Process formulas with id <= this value."),
 ) -> None:
-    if dry_run:
-        m = load_manifest(workdir)
-        todo = [
-            f["id"]
-            for f in m.get("formulas", [])
-            if force
-            or not any(
-                c.get("source") == "ollama_qwen"
-                and c.get("validation_status") != "error"
-                and (c.get("latex") or "").strip()
-                for c in f.get("candidates", [])
-            )
-        ]
-        status_files = {f["id"]: str(WorkPaths.from_workdir(workdir).ocr_dir / f"{f['id']}_ollama_qwen.json") for f in m.get("formulas", [])}
-        _echo_json({"would_ocr": todo, "count": len(todo), "status_files": status_files, "sequential": True})
-        return
     cfg = _cfg(config)
     if timeout_seconds is not None:
         cfg.setdefault("ollama", {})["timeout_seconds"] = timeout_seconds
-    m = run_ocr(workdir, cfg, force=force, progress=progress, verbose=verbose)
+    if dry_run:
+        from .formula_filter import filter_formulas
+
+        m = load_manifest(workdir)
+        formulas = filter_formulas(list(m.get("formulas", [])), only_id=only_id, limit=limit, from_id=from_id, to_id=to_id)
+        engines = configured_engine_names(cfg)
+        todo = {
+            engine: [
+                f["id"]
+                for f in formulas
+                if force
+                or not any(
+                    c.get("source") == engine
+                    and c.get("validation_status") != "error"
+                    and (c.get("latex") or "").strip()
+                    for c in f.get("candidates", [])
+                )
+            ]
+            for engine in engines
+        }
+        status_files = {
+            f["id"]: {engine: str(WorkPaths.from_workdir(workdir).ocr_dir / f"{f['id']}_{engine}.json") for engine in engines}
+            for f in formulas
+        }
+        _echo_json({"would_ocr": todo, "formula_count": len(formulas), "engines": engines, "status_files": status_files, "sequential": True})
+        return
+    m = run_ocr(workdir, cfg, force=force, progress=progress, verbose=verbose, only_id=only_id, limit=limit, from_id=from_id, to_id=to_id)
     typer.echo(f"OCR candidates recorded for {len(m.get('formulas', []))} formulas")
 
 
@@ -158,12 +190,24 @@ def add_docx2tex_candidates(workdir: Path = typer.Option(..., "--workdir"), docx
 
 
 @app.command("validate")
-def validate(workdir: Path = typer.Option(..., "--workdir"), config: Optional[Path] = typer.Option(None, "--config"), force: bool = typer.Option(False, "--force"), dry_run: bool = typer.Option(False, "--dry-run")) -> None:
+def validate(
+    workdir: Path = typer.Option(..., "--workdir"),
+    config: Optional[Path] = typer.Option(None, "--config"),
+    force: bool = typer.Option(False, "--force"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    only_id: Optional[str] = typer.Option(None, "--only-id", help="Validate one formula id, e.g. f0001."),
+    limit: Optional[int] = typer.Option(None, "--limit", help="Validate at most N formulas after id filters."),
+    from_id: Optional[str] = typer.Option(None, "--from-id", help="Validate formulas with id >= this value."),
+    to_id: Optional[str] = typer.Option(None, "--to-id", help="Validate formulas with id <= this value."),
+) -> None:
     if dry_run:
+        from .formula_filter import filter_formulas
+
         m = load_manifest(workdir)
-        _echo_json({"candidate_count": sum(len(f.get("candidates", [])) for f in m.get("formulas", []))})
+        formulas = filter_formulas(list(m.get("formulas", [])), only_id=only_id, limit=limit, from_id=from_id, to_id=to_id)
+        _echo_json({"formula_count": len(formulas), "candidate_count": sum(len(f.get("candidates", [])) for f in formulas)})
         return
-    m = validate_manifest(workdir, _cfg(config), force=force)
+    m = validate_manifest(workdir, _cfg(config), force=force, only_id=only_id, limit=limit, from_id=from_id, to_id=to_id)
     typer.echo(f"Validated candidates for {len(m.get('formulas', []))} formulas")
 
 
@@ -184,6 +228,15 @@ def report(workdir: Path = typer.Option(..., "--workdir"), config: Optional[Path
 def merge(workdir: Path = typer.Option(..., "--workdir"), config: Optional[Path] = typer.Option(None, "--config")) -> None:
     out = merge_stage(workdir, _cfg(config))
     typer.echo(f"Wrote {out}")
+
+
+
+
+@app.command("test-latex")
+def test_latex(workdir: Path = typer.Option(..., "--workdir"), config: Optional[Path] = typer.Option(None, "--config")) -> None:
+    """Compile a minimal Russian XeLaTeX document with monospace Cyrillic and math."""
+    result = run_latex_smoke_test(workdir, _cfg(config))
+    _echo_json(result)
 
 
 @app.command("build")

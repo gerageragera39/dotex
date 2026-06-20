@@ -89,8 +89,13 @@ flowchart TD
     B --> C[text.md + media/]
     C --> D[Formula manifest]
     D --> E[WMF/EMF → PNG]
-    E --> F[Local OCR via Ollama qwen3-vl:8b]
-    F --> G[LaTeX candidates]
+    E --> F[Local formula OCR engines]
+    F --> F1[TexTeller optional primary]
+    F --> F2[pix2tex local OCR]
+    F --> F3[Ollama qwen3-vl:8b fallback]
+    F1 --> G[LaTeX candidates]
+    F2 --> G
+    F3 --> G
     H[Optional docx2tex .tex] --> G
     G --> I[Per-formula XeLaTeX validation]
     I --> J[Best candidate selection]
@@ -107,7 +112,9 @@ flowchart TD
 | ------------------------ | ----------------------------------------------------------------------------------------- |
 | **Pandoc**               | Extracts text, paragraphs, lists, italics, bold text and media from DOCX                  |
 | **ImageMagick**          | Converts WMF/EMF formula previews into PNG                                                |
-| **Ollama + qwen3-vl:8b** | Recognizes formula images locally                                                         |
+| **TexTeller**           | Optional primary local formula OCR engine from `external/TexTeller`                       |
+| **pix2tex**              | Optional simple local formula OCR engine                                                  |
+| **Ollama + qwen3-vl:8b** | Fallback local vision OCR engine                                                          |
 | **XeLaTeX**              | Validates every candidate formula and builds final PDF                                    |
 | **docx2tex**             | Optional: used only as an additional formula candidate source, not as final TeX generator |
 
@@ -155,8 +162,10 @@ Install these tools locally:
 | Pandoc             | DOCX → Markdown and Markdown → LaTeX |
 | MiKTeX or TeX Live | XeLaTeX compilation                  |
 | ImageMagick        | WMF/EMF → PNG                        |
-| Ollama             | Local vision model runtime           |
-| `qwen3-vl:8b`      | Local formula OCR model              |
+| Ollama             | Local fallback vision model runtime  |
+| `qwen3-vl:8b`      | Local fallback formula OCR model     |
+| pix2tex            | Optional local formula OCR engine    |
+| TexTeller          | Optional primary formula OCR engine  |
 
 Install the model:
 
@@ -169,6 +178,39 @@ Check that Ollama is running:
 ```powershell
 ollama list
 ```
+
+---
+
+## Russian XeLaTeX preset
+
+By default, `docx2xelatex` generates XeLaTeX suitable for Russian scientific documents on Windows + MiKTeX:
+
+* `xelatex`
+* `fontspec`
+* `polyglossia` only; `babel` is not loaded in the default XeLaTeX preset
+* `Times New Roman` as the main font
+* `Arial` as the sans-serif font
+* `Consolas` as the monospace font
+* `amsmath`, `amssymb`, `mathtools` for formulas
+* optional `unicode-math`, disabled by default and loaded after `mathtools` when enabled
+
+The generated header explicitly defines Cyrillic font families for polyglossia, including monospace Cyrillic:
+
+```tex
+\newfontfamily\cyrillicfont{Times New Roman}[Script=Cyrillic]
+\newfontfamily\cyrillicfontsf{Arial}[Script=Cyrillic]
+\newfontfamily\cyrillicfonttt{Consolas}[Script=Cyrillic]
+```
+
+This avoids the common XeLaTeX/polyglossia error where `Courier New` or another monospace font is not recognized as supporting Cyrillic.
+
+Check the local Russian XeLaTeX preset:
+
+```powershell
+docx2xelatex test-latex --config config.yaml --workdir build
+```
+
+The command creates and compiles a minimal document with Russian text, `\texttt{...}` Cyrillic text, and a simple formula. `doctor --config config.yaml` also reports the XeLaTeX engine, configured fonts, polyglossia/babel conflict status, and the minimal Russian compile result when `xelatex` is available.
 
 ---
 
@@ -206,6 +248,8 @@ Expected checks:
 * Pandoc
 * ImageMagick `magick`
 * XeLaTeX
+* TexTeller status
+* pix2tex status or warning if it is not installed
 * Ollama
 * `qwen3-vl:8b`
 
@@ -288,10 +332,18 @@ Render formula images:
 docx2xelatex render-images --workdir $Build --config $Config
 ```
 
-Run local OCR:
+Run local OCR with configured engines:
 
 ```powershell
 docx2xelatex ocr --workdir $Build --config $Config --verbose
+```
+
+Run OCR for only one large formula:
+
+```powershell
+docx2xelatex ocr --workdir $Build --config $Config --only-id f0001 --force --verbose
+docx2xelatex validate --workdir $Build --config $Config --only-id f0001 --force
+docx2xelatex select --workdir $Build --config $Config
 ```
 
 Validate all candidates:
@@ -410,17 +462,82 @@ Candidate priority can be controlled in `config.yaml`:
 
 ```yaml
 candidate_selection:
-  priority: ["ollama_qwen", "docx2tex"]
-```
-
-or:
-
-```yaml
-candidate_selection:
-  priority: ["docx2tex", "ollama_qwen"]
+  priority: ["texteller", "pix2tex", "ollama_qwen", "docx2tex"]
 ```
 
 For my documents, `docx2tex` is usually more useful as a fallback candidate source than as the main converter.
+
+---
+
+## Optional formula OCR engines
+
+The OCR stage keeps the same lifecycle:
+
+```text
+image → png → candidates → validate → select → merge
+```
+
+The default engine order is:
+
+```yaml
+ocr:
+  engines: ["texteller", "pix2tex", "ollama_qwen"]
+
+candidate_selection:
+  priority: ["texteller", "pix2tex", "ollama_qwen", "docx2tex"]
+```
+
+Selection chooses the first independently validated candidate according to `candidate_selection.priority`. If TexTeller or pix2tex is unavailable, OCR records/prints a skip and Ollama remains available as the fallback engine. `doctor` reports TexTeller status and shows a warning when pix2tex is not installed.
+
+### Install pix2tex
+
+Inside your project virtual environment:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+pip install pix2tex
+# or, if you want its GUI extras:
+pip install "pix2tex[gui]"
+```
+
+Then check:
+
+```powershell
+docx2xelatex doctor --config config.yaml
+```
+
+### Clone or install TexTeller
+
+TexTeller is optional and is read from `external/TexTeller` by default:
+
+```powershell
+git clone https://github.com/OleehyO/TexTeller.git external/TexTeller
+```
+
+Install it in the same environment if you want the `texteller` console command:
+
+```powershell
+pip install -e external/TexTeller
+```
+
+If the CLI shape changes, configure the adapter command in `config.yaml`:
+
+```yaml
+texteller:
+  enabled: true
+  repo_path: "external/TexTeller"
+  timeout_seconds: 180
+  command: ["texteller", "inference", "{image_path}"]
+  # or: command: ["python", "-m", "texteller.cli", "inference", "{image_path}"]
+```
+
+### Process only one large formula
+
+```powershell
+docx2xelatex ocr --workdir build --config config.yaml --only-id f0001 --force --verbose
+docx2xelatex validate --workdir build --config config.yaml --only-id f0001 --force
+docx2xelatex select --workdir build --config config.yaml
+```
 
 ---
 
@@ -437,7 +554,9 @@ build/
     png/
       f0001.png                   # rendered formula image
     ocr/
-      f0001_ollama_qwen.json      # raw OCR status/result
+      f0001_texteller.json        # raw TexTeller status/result
+      f0001_pix2tex.json          # raw pix2tex status/result
+      f0001_ollama_qwen.json      # raw Ollama status/result
     validate/
       f0001/
         candidate_*.tex           # minimal validation files
@@ -464,23 +583,67 @@ docx2xelatex init-config --out config.yaml
 Important options:
 
 ```yaml
+ocr:
+  engines: ["texteller", "pix2tex", "ollama_qwen"]
+
+texteller:
+  enabled: true
+  repo_path: "external/TexTeller"
+  timeout_seconds: 180
+  command: null   # auto; or set a list/string with {image_path}
+
+pix2tex:
+  enabled: true
+  timeout_seconds: 180
+
 ollama:
+  enabled: true
   base_url: "http://localhost:11434"
   model: "qwen3-vl:8b"
-  timeout_seconds: 600
+  timeout_seconds: 1200
   resize_image: false
   max_image_side: 2400
   num_predict: null
 
 candidate_selection:
-  priority: ["ollama_qwen", "docx2tex"]
+  priority: ["texteller", "pix2tex", "ollama_qwen", "docx2tex"]
 
 latex:
   engine: xelatex
   mainfont: "Times New Roman"
   sansfont: "Arial"
-  monofont: "Courier New"
+  monofont: "Consolas"
+  documentclass: article
+  fontsize: 12pt
+  lang: ru-RU
+  main_language: russian
+  other_languages:
+    - english
   build_pdf: true
+  halt_on_error: false
+  use_polyglossia: true
+  use_babel: false
+  use_unicode_math: false
+```
+
+Disable an engine without changing the rest of the pipeline:
+
+```yaml
+texteller:
+  enabled: false
+
+pix2tex:
+  enabled: false
+
+ollama:
+  enabled: true
+```
+
+Or change engine run order:
+
+```yaml
+ocr:
+  engines: ["pix2tex", "ollama_qwen"]
 ```
 
 If OCR is too slow, try:
@@ -504,13 +667,14 @@ ollama:
 
 | Command                   | Description                                                       |
 | ------------------------- | ----------------------------------------------------------------- |
-| `doctor`                  | Check local dependencies                                          |
+| `doctor`                  | Check local dependencies and Russian XeLaTeX preset               |
+| `test-latex`              | Compile a minimal Russian XeLaTeX smoke-test document             |
 | `init-config`             | Create YAML config                                                |
 | `inspect-docx`            | Count DOCX formula/media internals without printing document text |
 | `pandoc-md`               | Convert DOCX to Markdown and extract media                        |
 | `manifest`                | Find formula images and create manifest                           |
 | `render-images`           | Convert WMF/EMF formulas to PNG                                   |
-| `ocr`                     | Run local formula OCR via Ollama/qwen3-vl                         |
+| `ocr`                     | Run configured local formula OCR engines                           |
 | `add-docx2tex-candidates` | Add candidates from docx2tex-generated `.tex`                     |
 | `validate`                | Compile every candidate formula separately                        |
 | `select`                  | Select the best valid candidate                                   |
@@ -519,11 +683,14 @@ ollama:
 | `build`                   | Generate clean final TeX/PDF                                      |
 | `full`                    | Run the main pipeline                                             |
 
-Useful OCR options:
+Useful OCR/validate options:
 
 ```powershell
 docx2xelatex ocr --workdir $Build --config $Config --verbose
 docx2xelatex ocr --workdir $Build --config $Config --timeout-seconds 1200
+docx2xelatex ocr --workdir $Build --config $Config --only-id f0001 --force --verbose
+docx2xelatex ocr --workdir $Build --config $Config --from-id f0010 --to-id f0020 --limit 5
+docx2xelatex validate --workdir $Build --config $Config --only-id f0001 --force
 ```
 
 ---
@@ -546,6 +713,25 @@ Install MiKTeX or TeX Live:
 ```powershell
 xelatex --version
 ```
+
+### Russian XeLaTeX preset fails
+
+Run:
+
+```powershell
+docx2xelatex test-latex --workdir $Build --config $Config
+docx2xelatex doctor --config $Config
+```
+
+For the default XeLaTeX preset, keep only one language system enabled:
+
+```yaml
+latex:
+  use_polyglossia: true
+  use_babel: false
+```
+
+Do not enable `use_babel: true` together with `use_polyglossia: true`; build validation rejects that combination.
 
 ### Ollama unavailable
 
@@ -580,6 +766,8 @@ docx2xelatex ocr --workdir $Build --config $Config --verbose
 Check current OCR status:
 
 ```powershell
+Get-Content "$Build\formulas\ocr\f0001_texteller.json"
+Get-Content "$Build\formulas\ocr\f0001_pix2tex.json"
 Get-Content "$Build\formulas\ocr\f0001_ollama_qwen.json"
 ```
 
@@ -632,7 +820,6 @@ pytest
 
 Planned improvements:
 
-* additional OCR engines such as `pix2tex` or `TexTeller`;
 * better formula candidate ranking;
 * side-by-side formula rendering comparison;
 * batch processing for multiple papers;

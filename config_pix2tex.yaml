@@ -1,76 +1,68 @@
-pandoc:
+﻿pandoc:
   from: docx
   to: markdown+raw_tex+tex_math_single_backslash
   wrap: none
+
 images:
   formula_extensions:
-  - .wmf
-  - .emf
+    - .wmf
+    - .emf
   preserve_extensions:
-  - .png
-  - .jpg
-  - .jpeg
+    - .png
+    - .jpg
+    - .jpeg
   imagemagick_density: 900
   trim: true
   background: white
+
 ocr:
   engines:
-  - texteller
-  - pix2tex
-  - ollama_qwen
-texteller:
+    - pix2tex
+
+pix2tex:
   enabled: true
+  timeout_seconds: 600
+
+texteller:
+  enabled: false
   repo_path: external/TexTeller
   timeout_seconds: 180
   command: null
-pix2tex:
-  enabled: true
-  timeout_seconds: 180
+
 ollama:
-  enabled: true
+  enabled: false
   base_url: http://localhost:11434
   model: qwen3-vl:8b
   timeout_seconds: 1200
   temperature: 0
-  num_predict: null
   force: false
-  progress: true
-  resize_image: false
-  max_image_side: 2400
-  retry_empty_with_original: true
+
 docx2tex:
   enabled: false
   priority: 2
+
 candidate_selection:
   priority:
-  - texteller
-  - pix2tex
-  - ollama_qwen
-  - docx2tex
+    - pix2tex
   reject_patterns:
-  - \[\]\s*\[\]
+    - \[\]\s*\[\]
   max_explanation_chars: 20
+
 latex:
   engine: xelatex
   mainfont: Times New Roman
   sansfont: Arial
-  monofont: Consolas
+  monofont: Courier New
   documentclass: article
   fontsize: 12pt
   lang: ru-RU
-  main_language: russian
-  other_languages:
-  - english
   build_pdf: true
   halt_on_error: false
-  use_polyglossia: true
-  use_babel: false
-  use_unicode_math: false
+
 merge:
   invalid_formula_policy: keep_image_with_todo
   inline_wrapper: \({latex}\)
-  display_wrapper: '\[
-
+  display_wrapper: |
+    \[
     {latex}
-
-    \]'
+    \]
