@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .paths import WorkPaths
-from .utils import read_json, read_text, write_json
+from .utils import read_json, read_text, write_json, write_json_atomic
 
 
 @dataclass
@@ -113,20 +113,57 @@ def parse_markdown_images(markdown: str) -> list[MarkdownImage]:
                 j = k
             else:
                 j = attrs_start
+        else:
+            j = attrs_start
         original = markdown[i:j]
         images.append(MarkdownImage(alt=alt, dest=dest.strip(), attrs=attrs, original=original, start=i, end=j))
         i = j
     return images
 
 
-def _display_guess(markdown: str, start: int, end: int) -> str:
+def _display_guess(markdown: str, start: int, end: int, image_path: str | None = None) -> str:
     line_start = markdown.rfind("\n", 0, start) + 1
     line_end = markdown.find("\n", end)
     if line_end == -1:
         line_end = len(markdown)
     before = markdown[line_start:start].strip()
     after = markdown[end:line_end].strip()
-    return "display" if not before and not after else "inline"
+    if not before and not after:
+        return "display"
+    # Lightweight image heuristic: a wide or tall rendered bitmap is usually a
+    # block equation even when Pandoc leaves it near whitespace/punctuation.
+    if image_path:
+        try:
+            from PIL import Image  # type: ignore[import-not-found]
+
+            with Image.open(image_path) as im:
+                w, h = im.size
+            if h >= 80 or (h > 0 and w / h >= 8 and w >= 360):
+                return "display"
+        except Exception:
+            pass
+    return "inline"
+
+
+def formula_display_type(formula: dict[str, Any]) -> str:
+    manual = (formula.get("display_type_manual") or "").strip()
+    auto = (formula.get("display_type_auto") or formula.get("display_type") or "inline").strip()
+    return manual if manual in {"inline", "display"} else (auto if auto in {"inline", "display"} else "inline")
+
+
+def set_display_type_auto(formula: dict[str, Any], display_type: str) -> None:
+    if display_type not in {"inline", "display"}:
+        display_type = "inline"
+    formula["display_type_auto"] = display_type
+    formula["display_type"] = formula_display_type(formula)
+
+
+def set_display_type_manual(formula: dict[str, Any], display_type: str | None) -> None:
+    if display_type in {"inline", "display"}:
+        formula["display_type_manual"] = display_type
+    else:
+        formula["display_type_manual"] = None
+    formula["display_type"] = formula_display_type(formula)
 
 
 def _resolve_image_path(dest: str, markdown_path: Path, workdir: Path) -> Path:
@@ -158,6 +195,7 @@ def create_manifest(markdown: str | Path, workdir: str | Path, config: dict[str,
             continue
         fid = f"f{len(formulas) + 1:04d}"
         resolved = _resolve_image_path(img.dest, md_path, wp.root)
+        display_auto = _display_guess(text, img.start, img.end, str(resolved))
         formulas.append(
             {
                 "id": fid,
@@ -165,7 +203,9 @@ def create_manifest(markdown: str | Path, workdir: str | Path, config: dict[str,
                 "alt": img.alt,
                 "markdown_path": img.dest,
                 "image_path": str(resolved),
-                "display_type": _display_guess(text, img.start, img.end),
+                "display_type_auto": display_auto,
+                "display_type_manual": None,
+                "display_type": display_auto,
                 "position": {"start": img.start, "end": img.end},
                 "png_path": str(wp.png_dir / f"{fid}.png"),
                 "candidates": [],
@@ -189,4 +229,4 @@ def load_manifest(workdir: str | Path) -> dict[str, Any]:
 
 
 def save_manifest(workdir: str | Path, manifest: dict[str, Any]) -> Path:
-    return write_json(WorkPaths.from_workdir(workdir).manifest_json, manifest)
+    return write_json_atomic(WorkPaths.from_workdir(workdir).manifest_json, manifest)

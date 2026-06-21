@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, NamedTuple
 from urllib.parse import unquote
 
 from .manifest import load_manifest, parse_markdown_images
@@ -13,6 +13,13 @@ class MergeInvariantError(RuntimeError):
     def __init__(self, message: str, unresolved: list[dict[str, Any]]):
         super().__init__(message)
         self.unresolved = unresolved
+
+
+class Replacement(NamedTuple):
+    start: int
+    end: int
+    text: str
+    formula_id: str
 
 
 def _normalize_ref(value: str | None) -> str:
@@ -91,15 +98,79 @@ def _png_todo_replacement(formula: dict[str, Any], wp: WorkPaths) -> str:
     return f"{_markdown_image(png_ref)}\n{todo}"
 
 
+def _formula_display_type(formula: dict[str, Any]) -> str:
+    manual = (formula.get("display_type_manual") or "").strip()
+    auto = (formula.get("display_type_auto") or formula.get("display_type") or "inline").strip()
+    return manual if manual in {"inline", "display"} else (auto if auto in {"inline", "display"} else "inline")
+
+
 def _replacement(formula: dict[str, Any], config: dict[str, Any], wp: WorkPaths) -> str:
     selected = (formula.get("selected_latex") or "").strip()
     if selected:
-        key = "display_wrapper" if formula.get("display_type") == "display" else "inline_wrapper"
+        key = "display_wrapper" if _formula_display_type(formula) == "display" else "inline_wrapper"
         return config.get("merge", {}).get(key, "{latex}").format(latex=selected)
     policy = config.get("merge", {}).get("invalid_formula_policy", "keep_image_with_todo")
     if policy == "drop_with_todo":
         return f"<!-- TODO_FORMULA_{formula['id']}: formula OCR/validation failed. -->"
     return _png_todo_replacement(formula, wp)
+
+
+def validate_replacements_no_overlap(replacements: Iterable[tuple[int, int, str, str] | Replacement]) -> list[dict[str, Any]]:
+    """Return overlap/range problems for replacement spans.
+
+    The merge stage must never apply overlapping ranges because replacing from the
+    back can otherwise delete unrelated text between two formula placeholders.
+    """
+    problems: list[dict[str, Any]] = []
+    normalized: list[Replacement] = []
+    for item in replacements:
+        r = item if isinstance(item, Replacement) else Replacement(item[0], item[1], item[2], str(item[3]))
+        if r.start < 0 or r.end < r.start:
+            problems.append({"reason": "invalid replacement range", "formula_ids": [r.formula_id], "start": r.start, "end": r.end})
+        normalized.append(r)
+    ordered = sorted(normalized, key=lambda r: (r.start, r.end))
+    for prev, cur in zip(ordered, ordered[1:]):
+        if cur.start < prev.end:
+            problems.append(
+                {
+                    "reason": "overlapping replacements",
+                    "formula_ids": [prev.formula_id, cur.formula_id],
+                    "ranges": [[prev.start, prev.end], [cur.start, cur.end]],
+                }
+            )
+    return problems
+
+
+def _overlaps_existing(start: int, end: int, replacements: list[Replacement]) -> bool:
+    return any(start < r.end and r.start < end for r in replacements)
+
+
+def _position(formula: dict[str, Any]) -> tuple[int | None, int | None]:
+    pos = formula.get("position") or {}
+    start, end = pos.get("start"), pos.get("end")
+    return (start if isinstance(start, int) else None, end if isinstance(end, int) else None)
+
+
+def _choose_formula_for_image(
+    img_start: int,
+    img_end: int,
+    matches: list[dict[str, Any]],
+    used_formula_ids: set[str],
+) -> dict[str, Any] | None:
+    unused = [f for f in matches if str(f.get("id")) not in used_formula_ids]
+    if not unused:
+        return None
+    exact = [f for f in unused if _position(f) == (img_start, img_end)]
+    if exact:
+        return exact[0]
+
+    def distance(formula: dict[str, Any]) -> tuple[int, str]:
+        start, end = _position(formula)
+        if start is None:
+            return (10**12, str(formula.get("id")))
+        return (abs(start - img_start) + (abs((end or start) - img_end) if end is not None else 0), str(formula.get("id")))
+
+    return sorted(unused, key=distance)[0]
 
 
 def scan_forbidden_formula_refs(markdown_text: str, manifest: dict[str, Any], workdir: str | Path, config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -135,39 +206,64 @@ def merge_markdown(workdir: str | Path, config: dict[str, Any], strict: bool = T
     markdown_dir = md_path.parent
     formulas = list(manifest.get("formulas", []))
 
-    replacements: list[tuple[int, int, str, str]] = []
+    replacements: list[Replacement] = []
     used_formula_ids: set[str] = set()
+    unresolved: list[dict[str, Any]] = []
     images = parse_markdown_images(text)
     for img in images:
-        match = next((f for f in formulas if _dest_matches_formula(img.dest, f, wp.root, markdown_dir)), None)
-        if not match:
+        matches = [f for f in formulas if _dest_matches_formula(img.dest, f, wp.root, markdown_dir)]
+        if not matches:
             continue
-        replacements.append((img.start, img.end, _replacement(match, config, wp), str(match.get("id"))))
-        used_formula_ids.add(str(match.get("id")))
+        match = _choose_formula_for_image(img.start, img.end, matches, used_formula_ids)
+        if not match:
+            unresolved.append({"dest": img.dest, "original": img.original, "reason": "all matching formulas already used", "formula_ids": [f.get("id") for f in matches]})
+            continue
+        fid = str(match.get("id"))
+        if _overlaps_existing(img.start, img.end, replacements):
+            unresolved.append({"reason": "overlap skipped", "formula_ids": [fid], "range": [img.start, img.end]})
+            continue
+        replacements.append(Replacement(img.start, img.end, _replacement(match, config, wp), fid))
+        used_formula_ids.add(fid)
 
-    # Fallback to historical exact offsets/matches if the Markdown parser did not
-    # see a variant that still exists in the text.
+    # Fallback to historical exact offsets/matches only for formulas not paired
+    # with parsed Markdown images, and only when the range is unused.
     for formula in formulas:
         fid = str(formula.get("id"))
         if fid in used_formula_ids:
             continue
         original = formula.get("original_match", "")
-        pos = formula.get("position") or {}
-        start, end = pos.get("start"), pos.get("end")
+        start, end = _position(formula)
         repl = _replacement(formula, config, wp)
-        if isinstance(start, int) and isinstance(end, int) and text[start:end] == original:
-            replacements.append((start, end, repl, fid))
-            used_formula_ids.add(fid)
-        elif original and original in text:
+        candidate_ranges: list[tuple[int, int]] = []
+        if start is not None and end is not None and text[start:end] == original:
+            candidate_ranges.append((start, end))
+        if original:
             idx = text.find(original)
-            replacements.append((idx, idx + len(original), repl, fid))
+            if idx >= 0:
+                candidate_ranges.append((idx, idx + len(original)))
+        for start2, end2 in candidate_ranges:
+            if _overlaps_existing(start2, end2, replacements):
+                unresolved.append({"reason": "fallback replacement overlaps existing replacement", "formula_ids": [fid], "range": [start2, end2]})
+                continue
+            replacements.append(Replacement(start2, end2, repl, fid))
             used_formula_ids.add(fid)
+            break
 
-    for start, end, repl, _fid in sorted(replacements, key=lambda item: item[0], reverse=True):
-        text = text[:start] + repl + text[end:]
+    overlap_problems = validate_replacements_no_overlap(replacements)
+    if overlap_problems:
+        unresolved.extend(overlap_problems)
+        write_json(wp.root / "merge-unresolved.json", unresolved)
+        if strict:
+            raise MergeInvariantError("Formula merge replacements overlap; see merge-unresolved.json", unresolved)
+        # Defensive: never apply ambiguous overlapping ranges in non-strict mode.
+        bad_ids = {fid for item in overlap_problems for fid in item.get("formula_ids", [])}
+        replacements = [r for r in replacements if r.formula_id not in bad_ids]
+
+    for r in sorted(replacements, key=lambda item: item.start, reverse=True):
+        text = text[: r.start] + r.text + text[r.end :]
 
     missing = [str(f.get("id")) for f in formulas if str(f.get("id")) not in used_formula_ids]
-    unresolved = scan_forbidden_formula_refs(text, manifest, workdir, config)
+    unresolved.extend(scan_forbidden_formula_refs(text, manifest, workdir, config))
     if missing:
         unresolved.extend({"formula_ids": [fid], "reason": "formula image match not found during merge"} for fid in missing)
     if unresolved:

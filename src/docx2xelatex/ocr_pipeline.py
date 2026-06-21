@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import shutil
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Iterable, Iterator, TypeVar
 
@@ -12,6 +15,7 @@ from .engines.texteller_engine import TexTellerEngine, texteller_status
 from .formula_filter import filter_formulas
 from .manifest import load_manifest, save_manifest
 from .paths import WorkPaths
+from .subprocess_utils import run_command
 from .utils import write_json
 
 T = TypeVar("T")
@@ -112,9 +116,11 @@ def candidate_priority_warnings(config: dict[str, Any]) -> list[str]:
             warnings.append(f"candidate_selection.priority contains unavailable engine {source}: {unavailable[source]}")
     return warnings
 
-def _has_usable_candidate(formula: dict[str, Any], source: str) -> bool:
+def _has_usable_candidate(formula: dict[str, Any], source: str, variant: str | None = None) -> bool:
     for candidate in formula.get("candidates", []):
         if candidate.get("source") != source:
+            continue
+        if variant is not None and candidate.get("variant", "original") != variant:
             continue
         if candidate.get("validation_status") == "error":
             continue
@@ -131,6 +137,59 @@ def _candidate_empty_reason(candidate: Candidate, source: str) -> str | None:
     if not latex:
         return "empty LaTeX after cleaning; inspect raw OCR response"
     return None
+
+
+
+def _ocr_variants(config: dict[str, Any]) -> list[str]:
+    variants = config.get("images", {}).get("ocr_variants", ["original"])
+    if isinstance(variants, str):
+        variants = [variants]
+    cleaned = [str(v) for v in variants if str(v).strip()]
+    return cleaned or ["original"]
+
+
+def _make_ocr_variant(png: Path, formula_id: str, variant: str, wp: WorkPaths, config: dict[str, Any]) -> Path:
+    if variant == "original":
+        return png
+    out_dir = wp.ocr_dir / "variants" / formula_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"{variant}.png"
+    if out.exists() and out.stat().st_mtime >= png.stat().st_mtime:
+        return out
+    padding = int(config.get("images", {}).get("padding_px", 24) or 0)
+    background = str(config.get("images", {}).get("background", "white"))
+    if shutil.which("magick"):
+        cmd = ["magick", str(png), "-background", background, "-alpha", "remove", "-alpha", "off"]
+        if variant == "padded":
+            cmd.extend(["-bordercolor", background, "-border", str(padding)])
+        elif variant == "trimmed_padded":
+            cmd.extend(["-trim", "+repage", "-bordercolor", background, "-border", str(padding)])
+        elif variant == "grayscale_contrast":
+            cmd.extend(["-colorspace", "Gray", "-contrast-stretch", "2%x2%", "-bordercolor", background, "-border", str(padding)])
+        elif variant == "binarized":
+            cmd.extend(["-colorspace", "Gray", "-threshold", "60%", "-bordercolor", background, "-border", str(padding)])
+        else:
+            return png
+        cmd.append(str(out))
+        proc = run_command(cmd, timeout=120)
+        if proc.returncode == 0 and out.exists():
+            return out
+    try:
+        from PIL import Image, ImageOps, ImageEnhance  # type: ignore[import-not-found]
+
+        im = Image.open(png).convert("RGB")
+        if variant in {"trimmed_padded", "grayscale_contrast", "binarized"}:
+            im = ImageOps.crop(im, border=0)
+        if variant in {"grayscale_contrast", "binarized"}:
+            im = ImageEnhance.Contrast(ImageOps.grayscale(im)).enhance(2.0)
+        if variant == "binarized":
+            im = im.point(lambda x: 255 if x > 153 else 0)
+        if variant in {"padded", "trimmed_padded", "grayscale_contrast", "binarized"} and padding > 0:
+            im = ImageOps.expand(im, border=padding, fill=background)
+        im.save(out)
+        return out
+    except Exception:
+        return png
 
 
 def _write_ocr_status(raw_path: Path, source: str, payload: dict[str, Any]) -> None:
@@ -173,6 +232,126 @@ def _recognize_with_engine(engine: FormulaEngine, source: str, image: Path, png:
     return candidate, retried_original, empty_reason
 
 
+
+def _ocr_max_workers(config: dict[str, Any]) -> int:
+    try:
+        value = int(config.get("ocr", {}).get("max_workers", 1) or 1)
+    except Exception:
+        value = 1
+    return max(1, value)
+
+
+_thread_local = threading.local()
+
+
+def _thread_engine(source: str, config: dict[str, Any]) -> FormulaEngine:
+    engines = getattr(_thread_local, "engines", None)
+    if engines is None:
+        engines = {}
+        _thread_local.engines = engines
+    if source not in engines:
+        engines[source] = _create_engine(source, config)
+    return engines[source]
+
+
+def _progress_futures(futures, enabled: bool, desc: str):
+    iterator = as_completed(futures)
+    if not enabled:
+        return iterator
+    try:
+        from tqdm.auto import tqdm
+
+        return tqdm(iterator, total=len(futures), desc=desc, unit="task", dynamic_ncols=True)
+    except Exception:
+        return iterator
+
+
+def _ocr_task(
+    source: str,
+    formula: dict[str, Any],
+    variant: str,
+    workdir: str | Path,
+    config: dict[str, Any],
+    verbose: bool,
+    progress: bool,
+) -> dict[str, Any]:
+    wp = WorkPaths.from_workdir(workdir)
+    png = Path(formula.get("png_path") or "")
+    raw_path = wp.ocr_dir / f"{formula['id']}_{source}_{variant}.json"
+    if not png.exists():
+        error = f"PNG not found: {png}"
+        _write_ocr_status(raw_path, source, {"status": "error", "formula_id": formula["id"], "variant": variant, "error": error, "started_at": time.time(), "finished_at": time.time()})
+        return {"formula_id": formula["id"], "variant": variant, "candidate": Candidate(source=source, latex="", raw=None, validation_status="error", validation_error=error).to_dict() | {"variant": variant}}
+    started_at = time.time()
+    try:
+        engine = _thread_engine(source, config)
+        variant_png = _make_ocr_variant(png, formula["id"], variant, wp, config)
+        ocr_image = _ocr_image_for_engine(source, variant_png, formula["id"], wp, config)
+        _write_ocr_status(
+            raw_path,
+            source,
+            {
+                "status": "running",
+                "formula_id": formula["id"],
+                "variant": variant,
+                "png_path": str(png),
+                "variant_png_path": str(variant_png),
+                "ocr_image_path": str(ocr_image),
+                "started_at": started_at,
+            },
+        )
+        if verbose:
+            print(f"start {source} {formula['id']} {variant}: {ocr_image}", file=sys.stderr, flush=True)
+        candidate, retried_original, empty_reason = _recognize_with_engine(engine, source, ocr_image, png, config, verbose=verbose, progress=progress)
+        elapsed = time.time() - started_at
+        _write_ocr_status(
+            raw_path,
+            source,
+            {
+                "status": "done" if not empty_reason else "empty_latex",
+                "formula_id": formula["id"],
+                "variant": variant,
+                "png_path": str(png),
+                "variant_png_path": str(variant_png),
+                "ocr_image_path": str(ocr_image),
+                "retried_original": retried_original,
+                "elapsed_seconds": round(elapsed, 3),
+                "raw": candidate.raw,
+                "latex": candidate.latex,
+                "raw_length": len(candidate.raw or ""),
+                "latex_length": len(candidate.latex or ""),
+                "error": empty_reason,
+                "started_at": started_at,
+                "finished_at": time.time(),
+            },
+        )
+        data = candidate.to_dict()
+        data["variant"] = variant
+        if verbose:
+            msg = "done" if not empty_reason else "empty"
+            print(f"{msg} {source} {formula['id']} {variant}: {elapsed:.1f}s", file=sys.stderr, flush=True)
+        return {"formula_id": formula["id"], "variant": variant, "candidate": data}
+    except Exception as exc:
+        elapsed = time.time() - started_at
+        _write_ocr_status(
+            raw_path,
+            source,
+            {
+                "status": "error",
+                "formula_id": formula["id"],
+                "variant": variant,
+                "png_path": str(png),
+                "elapsed_seconds": round(elapsed, 3),
+                "error": str(exc),
+                "started_at": started_at,
+                "finished_at": time.time(),
+            },
+        )
+        if verbose or progress:
+            print(f"error {source} {formula['id']} {variant}: {exc}", file=sys.stderr, flush=True)
+        return {"formula_id": formula["id"], "variant": variant, "candidate": Candidate(source=source, latex="", raw=None, validation_status="error", validation_error=str(exc)).to_dict() | {"variant": variant}}
+
+
 def run_ocr(
     workdir: str | Path,
     config: dict[str, Any],
@@ -199,9 +378,11 @@ def run_ocr(
     )
     effective = effective_ocr_engines(config)
     engine_names = list(effective["will_run"])
+    max_workers = _ocr_max_workers(config)
     if progress:
+        mode = "parallel" if max_workers > 1 else "sequential"
         print(
-            f"OCR: selected_formulas={len(formulas)}, requested_engines={effective['requested']}, sequential=true",
+            f"OCR: selected_formulas={len(formulas)}, requested_engines={effective['requested']}, mode={mode}, max_workers={max_workers}",
             file=sys.stderr,
             flush=True,
         )
@@ -236,112 +417,64 @@ def run_ocr(
                 )
             continue
 
-        pending = [f for f in formulas if force or not _has_usable_candidate(f, source)]
+        variants = _ocr_variants(config)
+        max_workers = _ocr_max_workers(config)
+        if force or any(has_candidate(f, source) for f in formulas):
+            for formula in formulas:
+                if force or has_candidate(formula, source):
+                    formula["candidates"] = [c for c in formula.get("candidates", []) if c.get("source") != source]
+            save_manifest(workdir, manifest)
+        tasks: list[tuple[dict[str, Any], str]] = []
+        skipped = 0
+        for formula in formulas:
+            for variant in variants:
+                raw_path = wp.ocr_dir / f"{formula['id']}_{source}_{variant}.json"
+                if _has_usable_candidate(formula, source, variant) and not force:
+                    skipped += 1
+                    if not raw_path.exists():
+                        existing = next((c for c in formula.get("candidates", []) if c.get("source") == source and c.get("variant", "original") == variant), {})
+                        _write_ocr_status(
+                            raw_path,
+                            source,
+                            {
+                                "status": "skipped_existing",
+                                "formula_id": formula["id"],
+                                "variant": variant,
+                                "latex": existing.get("latex", ""),
+                                "note": "Candidate already exists in manifest; use --force to re-run OCR.",
+                            },
+                        )
+                    if verbose:
+                        print(f"skip {source} {formula['id']} {variant}: existing candidate", file=sys.stderr, flush=True)
+                    continue
+                tasks.append((formula, variant))
+        pending_formulas = {str(f.get("id")) for f, _ in tasks}
         if progress:
+            mode = "parallel" if max_workers > 1 else "sequential"
             print(
-                f"OCR engine {source}: total={len(formulas)}, pending={len(pending)}, skipped_existing={len(formulas) - len(pending)}",
+                f"OCR engine {source}: total_formulas={len(formulas)}, tasks={len(tasks)}, pending_formulas={len(pending_formulas)}, "
+                f"skipped_tasks={skipped}, mode={mode}, max_workers={max_workers}, variants={variants}",
                 file=sys.stderr,
                 flush=True,
             )
-        for formula in _progress(formulas, bool(progress), f"{source} OCR"):
-            raw_path = wp.ocr_dir / f"{formula['id']}_{source}.json"
-            if _has_usable_candidate(formula, source) and not force:
-                if not raw_path.exists():
-                    existing = next((c for c in formula.get("candidates", []) if c.get("source") == source), {})
-                    _write_ocr_status(
-                        raw_path,
-                        source,
-                        {
-                            "status": "skipped_existing",
-                            "formula_id": formula["id"],
-                            "latex": existing.get("latex", ""),
-                            "note": "Candidate already exists in manifest; use --force to re-run OCR.",
-                        },
-                    )
-                if verbose:
-                    print(f"skip {source} {formula['id']}: existing candidate", file=sys.stderr, flush=True)
-                continue
-            if force or has_candidate(formula, source):
-                formula["candidates"] = [c for c in formula.get("candidates", []) if c.get("source") != source]
-            png = Path(formula.get("png_path") or "")
-            if not png.exists():
-                error = f"PNG not found: {png}"
-                formula.setdefault("candidates", []).append(
-                    Candidate(source=source, latex="", raw=None, validation_status="error", validation_error=error).to_dict()
-                )
-                _write_ocr_status(raw_path, source, {"status": "error", "formula_id": formula["id"], "error": error, "started_at": time.time(), "finished_at": time.time()})
-                save_manifest(workdir, manifest)
-                continue
-            started_at = time.time()
-            try:
-                ocr_image = _ocr_image_for_engine(source, png, formula["id"], wp, config)
-                _write_ocr_status(
-                    raw_path,
-                    source,
-                    {
-                        "status": "running",
-                        "formula_id": formula["id"],
-                        "png_path": str(png),
-                        "ocr_image_path": str(ocr_image),
-                        "started_at": started_at,
-                    },
-                )
-                if verbose:
-                    print(f"start {source} {formula['id']}: {ocr_image}", file=sys.stderr, flush=True)
-                candidate, retried_original, empty_reason = _recognize_with_engine(
-                    engine,
-                    source,
-                    ocr_image,
-                    png,
-                    config,
-                    verbose=verbose,
-                    progress=bool(progress),
-                )
-                elapsed = time.time() - started_at
-                _write_ocr_status(
-                    raw_path,
-                    source,
-                    {
-                        "status": "done" if not empty_reason else "empty_latex",
-                        "formula_id": formula["id"],
-                        "png_path": str(png),
-                        "ocr_image_path": str(ocr_image),
-                        "retried_original": retried_original,
-                        "elapsed_seconds": round(elapsed, 3),
-                        "raw": candidate.raw,
-                        "latex": candidate.latex,
-                        "raw_length": len(candidate.raw or ""),
-                        "latex_length": len(candidate.latex or ""),
-                        "error": empty_reason,
-                        "started_at": started_at,
-                        "finished_at": time.time(),
-                    },
-                )
-                formula.setdefault("candidates", []).append(candidate.to_dict())
-                save_manifest(workdir, manifest)
-                if verbose:
-                    msg = "done" if not empty_reason else "empty"
-                    print(f"{msg} {source} {formula['id']}: {elapsed:.1f}s", file=sys.stderr, flush=True)
-            except Exception as exc:
-                elapsed = time.time() - started_at
-                formula.setdefault("candidates", []).append(
-                    Candidate(source=source, latex="", raw=None, validation_status="error", validation_error=str(exc)).to_dict()
-                )
-                _write_ocr_status(
-                    raw_path,
-                    source,
-                    {
-                        "status": "error",
-                        "formula_id": formula["id"],
-                        "png_path": str(png),
-                        "elapsed_seconds": round(elapsed, 3),
-                        "error": str(exc),
-                        "started_at": started_at,
-                        "finished_at": time.time(),
-                    },
-                )
-                save_manifest(workdir, manifest)
-                if verbose or progress:
-                    print(f"error {source} {formula['id']}: {exc}", file=sys.stderr, flush=True)
+        if not tasks:
+            continue
+        by_id = {str(f.get("id")): f for f in formulas}
+        if max_workers == 1:
+            for formula, variant in _progress(tasks, bool(progress), f"{source} OCR"):
+                result = _ocr_task(source, formula, variant, workdir, config, verbose=verbose, progress=bool(progress))
+                target = by_id.get(str(result.get("formula_id")))
+                if target is not None:
+                    target.setdefault("candidates", []).append(result["candidate"])
+                    save_manifest(workdir, manifest)
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"docx2xelatex-{source}") as executor:
+                futures = [executor.submit(_ocr_task, source, formula, variant, workdir, config, verbose, bool(progress)) for formula, variant in tasks]
+                for future in _progress_futures(futures, bool(progress), f"{source} OCR"):
+                    result = future.result()
+                    target = by_id.get(str(result.get("formula_id")))
+                    if target is not None:
+                        target.setdefault("candidates", []).append(result["candidate"])
+            save_manifest(workdir, manifest)
     save_manifest(workdir, manifest)
     return manifest

@@ -6,24 +6,24 @@
   <style>
     body { font-family: Arial, sans-serif; margin: 1rem; }
     table { border-collapse: collapse; width: 100%; }
-    th, td { border: 1px solid #ccc; padding: .45rem; vertical-align: top; }
+    th, td { border: 1px solid #ccc; padding: .55rem; vertical-align: top; }
     th { background: #f2f2f2; position: sticky; top: 0; }
     tr.valid { background: #edf9ed; }
     tr.invalid { background: #fff0f0; }
     tr.pending { background: #fffbe6; }
-    img.formula { max-width: 420px; max-height: 180px; background: white; border: 1px solid #ddd; }
-    pre { white-space: pre-wrap; max-width: 42rem; }
+    img.formula { max-width: 720px; max-height: 360px; background: white; border: 1px solid #ddd; border-radius: 6px; padding: 4px; }
+    pre { white-space: pre-wrap; max-width: 52rem; }
     code { white-space: pre-wrap; }
     .small { color: #555; font-size: .9em; }
   </style>
 </head>
 <body>
 <h1>Отчёт проверки формул</h1>
-<p class="small">Файл manifest: <code>{{ manifest_path }}</code></p>
+<p class="small">Файл manifest: <code>{{ manifest_path }}</code>. Для редактирования запустите: <code>docx2xelatex review --workdir build --host 127.0.0.1 --port 8765</code></p>
 <table>
 <thead>
 <tr>
-  <th>id</th><th>original image</th><th>selected LaTeX</th><th>candidates</th><th>status/error</th><th>source</th><th>artifacts</th>
+  <th>id</th><th>original image</th><th>selected LaTeX</th><th>selected preview</th><th>candidates</th><th>status/error</th><th>source</th><th>artifacts</th>
 </tr>
 </thead>
 <tbody>
@@ -32,11 +32,13 @@
   <td><code>{{ f.id }}</code><br><span class="small">{{ f.display_type }}</span></td>
   <td>{% if f.png_rel %}<img class="formula" src="{{ f.png_rel }}" alt="{{ f.id }}">{% else %}<span class="small">no png</span>{% endif %}<br><code class="small">{{ f.image_path }}</code></td>
   <td><pre>{{ f.selected_latex or '' }}</pre></td>
+  <td>{% if f.selected_preview_rel %}<img class="formula" src="{{ f.selected_preview_rel }}" alt="{{ f.id }} preview">{% else %}<span class="small">no preview</span>{% endif %}</td>
   <td>
     {% for c in f.candidates %}
       <details open>
         <summary><b>{{ c.source }}</b> — {{ c.validation_status or 'not validated' }}</summary>
         <pre>{{ c.latex }}</pre>
+        {% if c.preview_rel %}<img class="formula" src="{{ c.preview_rel }}" alt="candidate preview">{% endif %}
         {% if c.validation_error %}<pre>{{ c.validation_error }}</pre>{% endif %}
       </details>
     {% endfor %}

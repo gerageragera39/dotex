@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from ..gpu_diagnostics import onnxruntime_status, torch_status
 from ..latex_clean import clean_latex_candidate
 from ..subprocess_utils import run_command
 from .base import Candidate
@@ -68,16 +69,35 @@ def _command_from_config(config: dict[str, Any], image_path: str | Path) -> list
     return [sys.executable, "-m", "texteller.cli", "inference", image]
 
 
+def _looks_like_latex_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    low = stripped.lower()
+    noise_tokens = ("progress", "download", "loaded", "loading", "elapsed", "it/s", "%|", "warning", "error:", "footer", "done", "saved")
+    if any(tok in low for tok in noise_tokens):
+        return False
+    if re.match(r"^[\[\]=>#.*\-\s]*\d+%", stripped):
+        return False
+    return bool(re.search(r"\\[A-Za-z]+|[_^{}=+\-*/<>]|\d", stripped))
+
+
 def _extract_latex(stdout: str) -> str:
     text = stdout.strip()
-    fenced = re.search(r"```(?:latex)?\s*(.*?)\s*```", text, flags=re.S | re.I)
+    fenced = re.search(r"```(?:latex|tex|math)?\s*(.*?)\s*```", text, flags=re.S | re.I)
     if fenced:
         return fenced.group(1).strip()
-    prefixed = re.search(r"Predicted\s+LaTeX\s*:\s*(.*)", text, flags=re.S | re.I)
-    if prefixed:
-        return prefixed.group(1).strip()
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    return lines[-1] if lines else ""
+    # Prefer single-line labelled predictions; stop at the line, not all footer text.
+    for line in text.splitlines():
+        m = re.search(r"(?:predicted\s+latex|latex|formula|result)\s*[:：]\s*(.+)$", line, flags=re.I)
+        if m and _looks_like_latex_line(m.group(1)):
+            return m.group(1).strip()
+    lines = [line.strip() for line in text.splitlines() if _looks_like_latex_line(line)]
+    if not lines:
+        return ""
+    # TexTeller CLIs usually print progress first and the prediction near the end;
+    # choose the last plausible math line, not an arbitrary footer/progress line.
+    return lines[-1]
 
 
 def texteller_status(config: dict[str, Any]) -> dict[str, Any]:
@@ -116,11 +136,15 @@ def texteller_status(config: dict[str, Any]) -> dict[str, Any]:
         "ok": ok if enabled else True,
         "will_run": bool(enabled and ok),
         "status": label,
+        "torch": torch_status() if enabled else None,
+        "onnxruntime": onnxruntime_status() if enabled else None,
     }
     if enabled and not has_entrypoint:
         status["warning"] = "TexTeller is enabled but no CLI/import/repo was found; clone or install TexTeller, or disable texteller.enabled."
     elif enabled and missing_modules:
         status["warning"] = f"TexTeller unavailable: missing module {missing_modules[0]}. Install: {status['install_hint']}"
+    elif enabled and status.get("onnxruntime") and not status["onnxruntime"].get("cuda_provider_available"):
+        status["gpu_warning"] = "ONNX Runtime CUDAExecutionProvider is not available; TexTeller may use CPU even when PyTorch CUDA works."
     return status
 
 

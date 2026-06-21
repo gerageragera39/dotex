@@ -39,12 +39,16 @@ def generate_report(workdir: str | Path, config: dict[str, Any]) -> Path:
     for formula in manifest.get("formulas", []):
         artifacts = []
         for c in formula.get("candidates", []):
-            for label, p in (c.get("artifacts") or {}).items():
+            artifacts_map = c.get("artifacts") or {}
+            c["preview_rel"] = _rel(artifacts_map.get("preview_png"), wp.report_dir)
+            for label, p in artifacts_map.items():
                 artifacts.append({"label": f"{c.get('source')} {label}", "href": _rel(p, wp.report_dir)})
         status = formula.get("validation_status") or "pending"
         row = dict(formula)
         row["row_class"] = "valid" if status == "valid" else "invalid" if status == "invalid" else "pending"
         row["png_rel"] = _rel(formula.get("png_path"), wp.report_dir)
+        selected = next((c for c in row.get("candidates", []) if c.get("candidate_key") == row.get("selected_candidate_key")), None)
+        row["selected_preview_rel"] = _rel(((selected or {}).get("artifacts") or {}).get("preview_png"), wp.report_dir)
         row["artifacts"] = artifacts
         rows.append(row)
     html = Template(_template_text()).render(formulas=rows, manifest_path=str(wp.manifest_json))

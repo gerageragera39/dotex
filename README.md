@@ -100,10 +100,12 @@ flowchart TD
     F2 --> G
     F3 --> G
     H[Optional docx2tex .tex] --> G
-    G --> I[Per-formula XeLaTeX validation]
-    I --> J[Best candidate selection]
-    J --> K[HTML review report]
-    J --> L[final.md]
+    G --> I[Per-formula XeLaTeX validation + PNG previews]
+    I --> J[Visual best candidate selection]
+    J --> K[Local review server / HTML report]
+    K --> K1[Human edit / compile / select]
+    K1 --> L[final.md]
+    J --> L
     L --> M[Pandoc]
     M --> N[clean final.tex]
     N --> O[XeLaTeX final.pdf]
@@ -119,6 +121,7 @@ flowchart TD
 | **TexTeller**            | Higher-quality formula OCR engine, useful for harder formulas            |
 | **Ollama + qwen3-vl:8b** | Optional local vision fallback                                           |
 | **XeLaTeX**              | Validates every candidate formula and builds final PDF                   |
+| **review server**        | Local browser UI to inspect, edit, compile and select formula candidates |
 | **docx2tex**             | Optional additional formula candidate source, not final TeX generator    |
 
 ---
@@ -257,13 +260,45 @@ CUDAExecutionProvider
 
 # Config presets
 
-The repository includes ready-to-use configs.
+The repository includes ready-to-use configs. All configs are merged with built-in defaults, so newer options such as validation previews, visual scoring, OCR variants, display-type overrides and review-server support work even if an older YAML file does not list every key.
 
-## `config_pix2tex.yaml`
+## Which config should I use?
 
-Fast and simple OCR mode.
+Short answer:
 
-Use this first if you want a stable baseline:
+* **Best first choice for most real papers:** `config_texteller.yaml`, if TexTeller is installed and works on your machine. It is slower, but usually gives better formula OCR for difficult scientific formulas.
+* **Best troubleshooting / quick smoke-test choice:** `config_pix2tex.yaml` or `config.yaml`. It is simpler and faster, but formula quality may be lower.
+* **Best quality workflow:** run multiple local engines and use the review UI. If you have both TexTeller and pix2tex installed, prefer a combined config with both engines enabled so the selector and review UI can compare candidates.
+
+Recommended combined OCR block for quality runs:
+
+```yaml
+ocr:
+  engines:
+    - texteller
+    - pix2tex
+
+texteller:
+  enabled: true
+
+pix2tex:
+  enabled: true
+
+candidate_selection:
+  strategy: visual_best
+  min_visual_score: 0.70
+  priority:
+    - texteller
+    - pix2tex
+    - ollama_qwen
+    - docx2tex
+```
+
+Use this only after `docx2xelatex doctor --config your-config.yaml` says both engines are available.
+
+## `config_pix2tex.yaml` / `config.yaml`
+
+Fast and simple OCR mode:
 
 ```yaml
 ocr:
@@ -274,33 +309,31 @@ ocr:
 Recommended for:
 
 * quick tests;
+* checking Pandoc/ImageMagick/XeLaTeX setup;
 * small documents;
-* fast local OCR;
-* debugging the pipeline.
+* debugging the pipeline before installing TexTeller.
 
 ## `config_texteller.yaml`
 
-Higher-quality OCR mode.
-
-Usually better for hard formulas:
+Higher-quality TexTeller mode. In the current preset it runs TexTeller as the OCR engine:
 
 ```yaml
 ocr:
   engines:
     - texteller
-    - pix2tex
 ```
 
 Recommended for:
 
-* final runs;
+* final runs when TexTeller is installed;
 * difficult formulas;
-* best formula quality;
-* comparing TexTeller vs pix2tex candidates.
+* better first-pass formula quality.
+
+If you also have pix2tex installed, add `pix2tex` to `ocr.engines` as shown above. That gives the review UI more candidates to compare.
 
 ## Optional Ollama fallback
 
-Ollama is disabled by default. To use it, enable it manually in a config:
+Ollama is disabled by default. Use it only with a local Ollama server. The tool rejects non-localhost Ollama URLs for privacy.
 
 ```yaml
 ollama:
@@ -320,11 +353,51 @@ Install the model:
 ollama pull qwen3-vl:8b
 ```
 
+## New useful config options
+
+```yaml
+ocr:
+  # Default is 1 for safety. For GPU OCR, try 2 first, then 3-4 if VRAM is OK.
+  max_workers: 2
+
+images:
+  ocr_variants:
+    - original
+    - padded
+    - trimmed_padded
+    - grayscale_contrast
+    - binarized
+  padding_px: 24
+
+validation:
+  render_preview: true
+  preview_density: 300
+  preview_trim: true
+  preview_padding: 12
+
+merge:
+  default_formula_display: auto
+  invalid_formula_policy: keep_image_with_todo
+  allow_invalid_formula_fallback: true
+  inline_wrapper: "\\({latex}\\)"
+  display_wrapper: "\\[\n{latex}\n\\]"
+```
+
+For production archival work, keep `allow_invalid_formula_fallback: true`: invalid formulas become PNG TODO fallbacks instead of breaking the whole document. If you want CI-style strictness, set it to `false`.
+
+For GPU OCR throughput, start with `ocr.max_workers: 2`. Increase to `3` or `4` only if GPU memory is stable. More workers can be slower or crash if each worker loads its own model copy.
+
 ---
 
-# Quick full run
+# Quick start: run, review, build
 
-The easiest way is to define paths once in PowerShell and then reuse them.
+The recommended workflow is now:
+
+```text
+DOCX → OCR/validate/select → local review UI → merge → build → audit
+```
+
+The review UI is important: it lets you inspect every formula, edit LaTeX, compile a manual candidate, select the best candidate, and switch inline/display mode without editing `manifest.json` by hand.
 
 ## 1. Set variables
 
@@ -337,13 +410,12 @@ cd "C:\Users\SED\Documents\dotex\docx2xelatex"
 $Project = "C:\Users\SED\Documents\dotex\docx2xelatex"
 $Docx = "$Project\example.docx"
 $Build = "$Project\build"
+
+# Best quality if TexTeller is installed:
 $Config = "$Project\config_texteller.yaml"
-```
 
-For a faster pix2tex-only run, use:
-
-```powershell
-$Config = "$Project\config_pix2tex.yaml"
+# Faster fallback / smoke-test config:
+# $Config = "$Project\config_pix2tex.yaml"
 ```
 
 ## 2. Check environment
@@ -354,7 +426,9 @@ docx2xelatex doctor --config $Config
 docx2xelatex test-latex --config $Config --workdir $Build
 ```
 
-## 3. Run everything
+Do not continue until `doctor` can find the tools you need: Pandoc, ImageMagick `magick`, XeLaTeX, and the OCR engine(s) enabled in your config.
+
+## 3. Run the automatic pass
 
 ```powershell
 Remove-Item $Build -Recurse -Force -ErrorAction SilentlyContinue
@@ -366,35 +440,72 @@ docx2xelatex full `
   --force
 ```
 
-## 4. Open results
+This creates `text.md`, formula PNGs, OCR candidates, validation logs/previews, `report/formulas.html`, `final.md`, `final.tex`, and `final.pdf` when the final XeLaTeX build succeeds. Formulas that cannot be safely selected are kept as PNG TODO fallbacks.
+
+## 4. Start the local formula review UI
+
+```powershell
+docx2xelatex review `
+  --workdir $Build `
+  --config $Config `
+  --host 127.0.0.1 `
+  --port 8765
+```
+
+Open:
+
+```text
+http://127.0.0.1:8765/formulas.html
+```
+
+The server binds to `127.0.0.1` by default for privacy. Use the UI to:
+
+* compare original formula PNGs with rendered candidate previews;
+* filter invalid, unresolved, manual or low-score formulas;
+* edit LaTeX in a textarea;
+* compile/recompile one formula;
+* select an OCR or manual candidate;
+* mark a formula as inline or display;
+* call merge/build from the browser.
+
+Manual selections are preserved when you rerun `select`. To override them automatically, use:
+
+```powershell
+docx2xelatex select --workdir $Build --config $Config --force-auto-select
+```
+
+## 5. Merge, build, audit
+
+After review corrections:
+
+```powershell
+docx2xelatex merge --workdir $Build --config $Config --strict
+docx2xelatex build --workdir $Build --config $Config --force
+docx2xelatex audit --workdir $Build --config $Config
+```
+
+Open results:
 
 ```powershell
 Start-Process "$Build\report\formulas.html"
 Start-Process "$Build\final.pdf"
 ```
+
+`audit` reports unresolved formulas, stale validation artifacts, missing previews, selected invalid formulas, forbidden WMF/EMF refs in `final.md`, and final XeLaTeX compile status.
 
 ---
 
-# Recommended full run modes
+# Recommended run modes
 
 ## Fast mode: pix2tex only
 
+Use for installation checks and quick iterations:
+
 ```powershell
-$Project = "C:\Users\SED\Documents\dotex\docx2xelatex"
-$Docx = "$Project\example.docx"
-$Build = "$Project\build"
 $Config = "$Project\config_pix2tex.yaml"
 
-Remove-Item $Build -Recurse -Force -ErrorAction SilentlyContinue
-
-docx2xelatex full `
-  --input $Docx `
-  --workdir $Build `
-  --config $Config `
-  --force
-
-Start-Process "$Build\report\formulas.html"
-Start-Process "$Build\final.pdf"
+docx2xelatex full --input $Docx --workdir $Build --config $Config --force
+docx2xelatex review --workdir $Build --config $Config
 ```
 
 Expected OCR output:
@@ -403,33 +514,46 @@ Expected OCR output:
 OCR effective engines: ['pix2tex']
 ```
 
-## Quality mode: TexTeller + pix2tex
+## Quality mode: TexTeller
+
+Use for serious formula recovery if TexTeller is installed:
 
 ```powershell
-$Project = "C:\Users\SED\Documents\dotex\docx2xelatex"
-$Docx = "$Project\example.docx"
-$Build = "$Project\build"
 $Config = "$Project\config_texteller.yaml"
 
-Remove-Item $Build -Recurse -Force -ErrorAction SilentlyContinue
-
-docx2xelatex full `
-  --input $Docx `
-  --workdir $Build `
-  --config $Config `
-  --force
-
-Start-Process "$Build\report\formulas.html"
-Start-Process "$Build\final.pdf"
+docx2xelatex full --input $Docx --workdir $Build --config $Config --force
+docx2xelatex review --workdir $Build --config $Config
 ```
 
-Expected OCR output:
+Expected OCR output for the current preset:
 
 ```text
-OCR effective engines: ['texteller', 'pix2tex']
+OCR effective engines: ['texteller']
 ```
 
-This mode is slower, but usually gives better formula candidates.
+## Best comparison mode: TexTeller + pix2tex
+
+For best human-review results, use a config that runs both engines. Copy `config_texteller.yaml`, enable pix2tex, and set:
+
+```yaml
+ocr:
+  engines:
+    - texteller
+    - pix2tex
+
+pix2tex:
+  enabled: true
+
+candidate_selection:
+  strategy: visual_best
+  priority:
+    - texteller
+    - pix2tex
+    - ollama_qwen
+    - docx2tex
+```
+
+Then run the same `full` + `review` flow. This is usually the best mode when both engines are available, because the selector can use visual score and you can compare alternatives in the browser.
 
 ---
 
@@ -519,20 +643,29 @@ docx2xelatex validate --workdir $Build --config $Config
 docx2xelatex select --workdir $Build --config $Config
 ```
 
-## 10. Generate review report
+## 10. Review formulas interactively
+
+Generate the static report if you only need read-only inspection:
 
 ```powershell
 docx2xelatex report --workdir $Build --config $Config
 Start-Process "$Build\report\formulas.html"
 ```
 
-At this point, inspect formulas visually.
+For editing and selecting formulas, start the local review server instead:
 
-## 11. Merge and build
+```powershell
+docx2xelatex review --workdir $Build --config $Config --host 127.0.0.1 --port 8765
+```
+
+Open `http://127.0.0.1:8765/formulas.html`, fix suspicious formulas, compile manual edits, select the desired candidate, and override inline/display when needed.
+
+## 11. Merge, build and audit
 
 ```powershell
 docx2xelatex merge --workdir $Build --config $Config --strict
 docx2xelatex build --workdir $Build --config $Config --force
+docx2xelatex audit --workdir $Build --config $Config
 ```
 
 Open the result:
@@ -578,69 +711,67 @@ docx2xelatex build --workdir $Build --config $Config --force
 
 ---
 
-# Formula review report
+# Formula review UI and report
 
-The HTML report is one of the most important parts of the project.
+There are now two formula-review surfaces. For a detailed button-by-button guide, see [`docs/REVIEW_UI.md`](docs/REVIEW_UI.md).
 
-It shows:
+## Interactive local review server
 
-* formula id;
-* original image;
-* selected LaTeX;
-* candidate source;
-* validation status;
-* validation errors;
-* links to validation logs.
-
-Open it after OCR and validation:
+Start it after `validate` + `select`, or after `full`:
 
 ```powershell
+docx2xelatex review --workdir $Build --config $Config --host 127.0.0.1 --port 8765
+```
+
+Open:
+
+```text
+http://127.0.0.1:8765/formulas.html
+```
+
+The UI shows:
+
+* a large original formula PNG panel with **Fit panel**, **Actual size** and **Open image** controls;
+* current selected LaTeX;
+* rendered preview of the selected LaTeX;
+* all OCR/manual candidates with source, status, error, visual score and preview;
+* editable textarea for manual LaTeX;
+* buttons to compile/recompile, select a candidate, merge, build and audit;
+* inline/display toggle with explanations in the page;
+* filters for invalid, unresolved, low visual score and manual formulas;
+* search by formula id or LaTeX text.
+
+Important: **inline** means the formula is inserted inside a sentence as `\( latex \)`. **Display** means the formula is inserted as a standalone equation block `\[ latex \]`. Use inline for small formulas in text; use display for standalone equations, tall fractions, sums, matrices or multi-line formulas.
+
+Manual edits are saved as `source: "manual"` candidates in `build/formulas/manifest.json`. The manifest is updated atomically.
+
+## Static read-only report
+
+If you only need a static report:
+
+```powershell
+docx2xelatex report --workdir $Build --config $Config
 Start-Process "$Build\report\formulas.html"
 ```
 
-A good workflow is:
+The report includes candidate previews when available, but it cannot compile or select formulas.
 
-1. Open the report.
-2. Check suspicious formulas.
-3. Compare candidates from TexTeller and pix2tex.
-4. Fix bad formulas manually in `manifest.json` if needed.
-5. Re-run only `merge` and `build`.
+## Manual correction workflow
 
----
+Prefer the review UI over hand-editing JSON:
 
-# Manual formula correction
-
-If OCR fails or produces a wrong formula, edit:
-
-```text
-build/formulas/manifest.json
-```
-
-Find the formula:
-
-```json
-{
-  "id": "f0001",
-  "selected_latex": null,
-  "selected_source": null
-}
-```
-
-Set:
-
-```json
-{
-  "selected_latex": "\\frac{a}{b}",
-  "selected_source": "manual"
-}
-```
-
-Then rebuild only the tail:
+1. Paste or type corrected LaTeX into the formula textarea.
+2. Click **Compile/recompile this formula**.
+3. If it validates and looks right, click **Select textarea** or select the new manual candidate.
+4. Run merge/build/audit.
 
 ```powershell
 docx2xelatex merge --workdir $Build --config $Config --strict
 docx2xelatex build --workdir $Build --config $Config --force
+docx2xelatex audit --workdir $Build --config $Config
 ```
+
+If you must edit JSON manually, update `build/formulas/manifest.json`, but be careful: the review UI also stores validation artifacts, preview paths and selected candidate keys.
 
 ---
 
@@ -657,14 +788,16 @@ build/
     png/
       f0001.png                   # rendered formula image
     ocr/
-      f0001_texteller.json        # raw TexTeller status/result
-      f0001_pix2tex.json          # raw pix2tex status/result
-      f0001_ollama_qwen.json      # raw Ollama status/result
+      f0001_texteller_original.json        # raw TexTeller status/result
+      f0001_pix2tex_original.json          # raw pix2tex status/result
+      f0001_ollama_qwen_original.json      # raw Ollama status/result
+      variants/                            # optional OCR image variants
     validate/
       f0001/
         candidate_*.tex           # minimal validation files
         candidate_*.log           # XeLaTeX logs
         candidate_*.pdf           # rendered candidate if valid
+        candidate_*.png           # cropped preview used by report/review UI
   report/
     formulas.html                 # visual formula review report
   final.md                        # Markdown with LaTeX formulas or TODOs
@@ -713,6 +846,37 @@ docx2xelatex doctor --config $Config
 
 ---
 
+## Formula selection behavior
+
+Selection order is:
+
+1. existing manual selection, unless `--force-auto-select` is used;
+2. valid candidate with best visual score above `candidate_selection.min_visual_score`;
+3. valid candidate by `candidate_selection.priority`;
+4. unresolved PNG TODO fallback.
+
+Every candidate keeps raw OCR output separately from cleaned/normalized LaTeX. Conservative repair variants are added as extra candidates instead of overwriting raw OCR.
+
+## Inline vs display formulas
+
+The manifest stores:
+
+```text
+display_type_auto
+display_type_manual
+display_type
+```
+
+`display_type_manual` wins when present. The review UI can override inline/display. Merge uses:
+
+```yaml
+merge:
+  inline_wrapper: "\\({latex}\\)"
+  display_wrapper: "\\[\n{latex}\n\\]"
+```
+
+---
+
 # CLI commands
 
 | Command                   | Description                                                       |
@@ -730,20 +894,26 @@ docx2xelatex doctor --config $Config
 | `add-docx2tex-candidates` | Add candidates from docx2tex-generated `.tex`                     |
 | `validate`                | Compile every candidate formula separately                        |
 | `select`                  | Select the best valid candidate                                   |
-| `report`                  | Generate HTML formula review report                               |
+| `report`                  | Generate static read-only HTML formula report                     |
+| `review`                  | Start local interactive formula review server                     |
 | `merge`                   | Replace image formulas with LaTeX in Markdown                     |
 | `build`                   | Generate clean final TeX/PDF                                      |
+| `audit`                   | Check formula/build reliability after selection and merge         |
 | `full`                    | Run the full pipeline                                             |
 
 Useful options:
 
 ```powershell
 docx2xelatex ocr --workdir $Build --config $Config --verbose
+docx2xelatex ocr --workdir $Build --config $Config --max-workers 2 --verbose
 docx2xelatex ocr --workdir $Build --config $Config --only-id f0001 --force --verbose
 docx2xelatex ocr --workdir $Build --config $Config --from-id f0010 --to-id f0020 --limit 5
 docx2xelatex validate --workdir $Build --config $Config --only-id f0001 --force
+docx2xelatex select --workdir $Build --config $Config --force-auto-select
+docx2xelatex review --workdir $Build --config $Config --host 127.0.0.1 --port 8765
 docx2xelatex merge --workdir $Build --config $Config --strict
 docx2xelatex build --workdir $Build --config $Config --force
+docx2xelatex audit --workdir $Build --config $Config
 ```
 
 ---
@@ -825,6 +995,62 @@ If the specific missing module is `optimum`:
 ```powershell
 pip install "optimum[onnxruntime]>=1.24.0"
 ```
+
+
+## GPU OCR is available but utilization is low
+
+First make sure you are using the same environment where you installed requirements. For your `.test_venv`:
+
+```powershell
+.\.test_venv\Scripts\Activate.ps1
+python -m pip show docx2xelatex
+python -c "import sys; print(sys.executable)"
+docx2xelatex doctor --config $Config
+```
+
+`doctor` prints both PyTorch CUDA and ONNX Runtime providers. This distinction matters:
+
+* pix2tex is PyTorch-based, so `torch.cuda.is_available()` is the important check.
+* TexTeller may use ONNX Runtime for parts of its pipeline, so you also need `CUDAExecutionProvider` in `onnxruntime.get_available_providers()`.
+* PyTorch CUDA can work while ONNX Runtime is CPU-only. In that case, TexTeller can still use CPU even though your PyTorch test succeeds.
+
+Check manually inside `.test_venv`:
+
+```powershell
+python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else None)"
+python -c "import onnxruntime as ort; print(ort.__version__); print(ort.get_available_providers())"
+```
+
+If ONNX Runtime does not list `CUDAExecutionProvider`, install a GPU-compatible ONNX Runtime build in `.test_venv` and make sure its CUDA/cuDNN requirements match your system.
+
+The OCR pipeline used to run formula tasks one by one. Current versions support parallel OCR tasks:
+
+```powershell
+docx2xelatex ocr `
+  --workdir $Build `
+  --config $Config `
+  --max-workers 2 `
+  --force `
+  --verbose
+```
+
+or in YAML:
+
+```yaml
+ocr:
+  max_workers: 2
+```
+
+Start with `2`. If GPU memory is fine, try `3` or `4`. Do not set a very high value: pix2tex/TexTeller workers may each keep a model in memory, and too many workers can reduce speed or run out of VRAM.
+
+During OCR, the log should say something like:
+
+```text
+OCR: selected_formulas=..., requested_engines=..., mode=parallel, max_workers=2
+OCR engine pix2tex: ..., mode=parallel, max_workers=2
+```
+
+If it still says `mode=sequential`, your config/CLI is not setting `max_workers` above 1.
 
 ## OCR runs on CPU instead of GPU
 
@@ -908,12 +1134,9 @@ pytest
 
 Planned improvements:
 
-* better formula candidate ranking;
-* side-by-side formula rendering comparison;
 * batch processing for multiple papers;
 * improved table handling;
 * better support for numbered equations;
-* optional manual review UI;
 * better GPU diagnostics for TexTeller and pix2tex.
 
 ---

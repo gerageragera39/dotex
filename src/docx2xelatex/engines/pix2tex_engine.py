@@ -6,6 +6,7 @@ import warnings
 from pathlib import Path
 from typing import Any
 
+from ..gpu_diagnostics import torch_status
 from ..latex_clean import clean_latex_candidate
 from .base import Candidate
 
@@ -23,10 +24,17 @@ def _pix2tex_api_available() -> bool:
 
 def pix2tex_status() -> dict[str, Any]:
     ok = _pix2tex_api_available()
+    torch = torch_status()
+    warning = None if ok else 'pix2tex is not installed; install optional dependency with `pip install -e ".[pix2tex]"`.'
+    gpu_warning = None
+    if ok and not torch.get("cuda_available"):
+        gpu_warning = "PyTorch CUDA is not available; pix2tex will run on CPU in this environment."
     return {
         "enabled_dependency": ok,
         "ok": ok,
-        "warning": None if ok else 'pix2tex is not installed; install optional dependency with `pip install -e ".[pix2tex]"`.',
+        "warning": warning,
+        "torch": torch,
+        "gpu_warning": gpu_warning,
     }
 
 

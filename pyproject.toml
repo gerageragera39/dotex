@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+visual = ["Pillow>=10"]
 pix2tex = [
   "pix2tex>=0.1.4",
 ]

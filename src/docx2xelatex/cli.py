@@ -16,6 +16,7 @@ from .config import load_config, write_default_config
 from .engines.docx2tex_tex import add_docx2tex_candidates as add_docx2tex_stage
 from .engines.pix2tex_engine import pix2tex_status
 from .engines.texteller_engine import texteller_status
+from .gpu_diagnostics import gpu_diagnostics
 from .ocr_pipeline import candidate_priority_warnings, effective_ocr_engines, run_ocr
 from .image_convert import render_images as render_images_stage
 from .latex_validate import validate_manifest
@@ -25,6 +26,7 @@ from .pandoc_stage import run_pandoc_docx_to_markdown
 from .paths import WorkPaths
 from .report import generate_report
 from .select_candidate import select_candidates
+from .audit import audit_workdir
 from .subprocess_utils import run_command
 from .utils import command_exists, write_json
 
@@ -62,7 +64,8 @@ def doctor(config: Optional[Path] = typer.Option(None, "--config", help="YAML co
         "magick": {"path": shutil.which("magick"), "ok": command_exists("magick")},
         "xelatex": {"path": shutil.which(cfg.get("latex", {}).get("engine", "xelatex")), "ok": command_exists(cfg.get("latex", {}).get("engine", "xelatex"))},
         "latex_config": latex_doctor_checks(cfg),
-        "ocr": {"engines": cfg.get("ocr", {}).get("engines")},
+        "ocr": {"engines": cfg.get("ocr", {}).get("engines"), "max_workers": cfg.get("ocr", {}).get("max_workers", 1)},
+        "gpu": gpu_diagnostics(),
         "effective_ocr_engines": effective_ocr_engines(cfg),
         "candidate_priority_warnings": candidate_priority_warnings(cfg),
         "texteller": texteller_status(cfg),
@@ -179,6 +182,7 @@ def ocr(
     progress: bool = typer.Option(True, "--progress/--no-progress", help="Show tqdm-style progress and status hints."),
     verbose: bool = typer.Option(False, "--verbose", help="Print per-formula start/skip/done messages."),
     timeout_seconds: Optional[int] = typer.Option(None, "--timeout-seconds", help="Override Ollama per-formula request timeout."),
+    max_workers: Optional[int] = typer.Option(None, "--max-workers", help="Run OCR on up to N formula/variant tasks concurrently. Start with 2 for GPU OCR."),
     only_id: Optional[str] = typer.Option(None, "--only-id", help="Process one formula id, e.g. f0001."),
     limit: Optional[int] = typer.Option(None, "--limit", help="Process at most N formulas after id filters."),
     from_id: Optional[str] = typer.Option(None, "--from-id", help="Process formulas with id >= this value."),
@@ -187,6 +191,8 @@ def ocr(
     cfg = _cfg(config)
     if timeout_seconds is not None:
         cfg.setdefault("ollama", {})["timeout_seconds"] = timeout_seconds
+    if max_workers is not None:
+        cfg.setdefault("ocr", {})["max_workers"] = max(1, int(max_workers))
     if dry_run:
         from .formula_filter import filter_formulas
 
@@ -212,7 +218,7 @@ def ocr(
             f["id"]: {engine: str(WorkPaths.from_workdir(workdir).ocr_dir / f"{f['id']}_{engine}.json") for engine in engines}
             for f in formulas
         }
-        _echo_json({"would_ocr": todo, "formula_count": len(formulas), "engines": engines, "effective_ocr_engines": effective, "status_files": status_files, "sequential": True})
+        _echo_json({"would_ocr": todo, "formula_count": len(formulas), "engines": engines, "effective_ocr_engines": effective, "status_files": status_files, "max_workers": cfg.get("ocr", {}).get("max_workers", 1), "sequential": int(cfg.get("ocr", {}).get("max_workers", 1) or 1) <= 1})
         return
     m = run_ocr(workdir, cfg, force=force, progress=progress, verbose=verbose, only_id=only_id, limit=limit, from_id=from_id, to_id=to_id)
     typer.echo(f"OCR candidates recorded for {len(m.get('formulas', []))} formulas")
@@ -247,10 +253,32 @@ def validate(
 
 
 @app.command("select")
-def select(workdir: Path = typer.Option(..., "--workdir"), config: Optional[Path] = typer.Option(None, "--config")) -> None:
-    m = select_candidates(workdir, _cfg(config))
+def select(workdir: Path = typer.Option(..., "--workdir"), config: Optional[Path] = typer.Option(None, "--config"), force_auto_select: bool = typer.Option(False, "--force-auto-select", help="Override existing manual selections.")) -> None:
+    m = select_candidates(workdir, _cfg(config), force_auto_select=force_auto_select)
     selected = sum(1 for f in m.get("formulas", []) if f.get("selected_latex"))
     typer.echo(f"Selected {selected}/{len(m.get('formulas', []))} formulas")
+
+
+@app.command("review")
+def review(
+    workdir: Path = typer.Option(..., "--workdir"),
+    config: Optional[Path] = typer.Option(None, "--config"),
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8765, "--port"),
+) -> None:
+    """Start the local human-in-the-loop formula review server."""
+    from .review_server import run_review_server
+
+    run_review_server(workdir, _cfg(config), host=host, port=port)
+
+
+@app.command("audit")
+def audit(workdir: Path = typer.Option(..., "--workdir"), config: Optional[Path] = typer.Option(None, "--config")) -> None:
+    """Audit formula selection, artifacts, final Markdown, and final TeX compile status."""
+    result = audit_workdir(workdir, _cfg(config))
+    _echo_json(result)
+    if result.get("status") == "failed":
+        raise typer.Exit(1)
 
 
 @app.command("report")
@@ -320,6 +348,20 @@ def full(input_path: Path = typer.Option(..., "--input"), workdir: Path = typer.
         run_ocr(workdir, cfg, force=force)
         validate_manifest(workdir, cfg, force=force)
         manifest = select_candidates(workdir, cfg)
+        invalid_selected = [f for f in manifest.get("formulas", []) if f.get("selected_latex") and f.get("validation_status") != "valid"]
+        if invalid_selected:
+            if not cfg.get("merge", {}).get("allow_invalid_formula_fallback", True):
+                raise RuntimeError(f"Selected formula(s) failed validation: {[f.get('id') for f in invalid_selected]}")
+            for formula in invalid_selected:
+                formula["selection_rejected"] = [*formula.get("selection_rejected", []), {"source": formula.get("selected_source", "unknown"), "reason": "selected candidate invalid; falling back to TODO PNG"}]
+                formula["selected_latex"] = None
+                formula["selected_source"] = None
+                formula["selected_candidate_key"] = None
+                formula["validation_status"] = "invalid"
+                formula["validation_error"] = "selected candidate invalid; fell back to TODO PNG"
+            from .manifest import save_manifest
+
+            save_manifest(workdir, manifest)
         generate_report(workdir, cfg)
         merge_stage(workdir, cfg, strict=True)
         result = build_stage(workdir, cfg, force=force)

@@ -14,8 +14,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "imagemagick_density": 900,
         "trim": True,
         "background": "white",
+        "ocr_variants": ["original"],
+        "padding_px": 24,
     },
-    "ocr": {"engines": ["pix2tex"]},
+    "ocr": {"engines": ["pix2tex"], "max_workers": 1},
     "texteller": {
         "enabled": False,
         "repo_path": "external/TexTeller",
@@ -43,9 +45,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "docx2tex": {"enabled": False, "priority": 2},
     "candidate_selection": {
+        "strategy": "visual_best",
+        "min_visual_score": 0.70,
         "priority": ["pix2tex", "texteller", "ollama_qwen", "docx2tex"],
         "reject_patterns": [r"\[\]\s*\[\]"],
         "max_explanation_chars": 20,
+    },
+    "validation": {
+        "render_preview": True,
+        "preview_density": 300,
+        "preview_trim": True,
+        "preview_padding": 12,
     },
     "latex": {
         "engine": "xelatex",
@@ -65,6 +75,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "merge": {
         "invalid_formula_policy": "keep_image_with_todo",
+        "allow_invalid_formula_fallback": True,
+        "default_formula_display": "auto",
         "inline_wrapper": r"\({latex}\)",
         "display_wrapper": "\\[\n{latex}\n\\]",
     },
